@@ -1,0 +1,9 @@
+language: generic
+sudo: false
+addons:
+  apt:
+    packages:
+      - tcl
+      - tcllib
+script:
+  - tclsh tests.tcl
