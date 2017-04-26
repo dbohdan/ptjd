@@ -1,15 +1,98 @@
 # PTJD, a pure Tcl (baseline) JPEG decoder.
 # Copyright (c) 2017 dbohdan and contributors listed in AUTHORS
 # License: MIT.
-package require Tcl 8.5
-package require tcltest
-
-if {[llength $argv] > 0} {
-    tcltest::configure -match $argv
-}
-
 source ptjd.tcl
 
+set numTests(Total)    0
+set numTests(Passed)   0
+set numTests(Failed)   0
+set numTests(Skipped)  0
+
+set testConstraints(jim) [string match *jim* [info nameofexecutable]]
+set testConstraints(tcl) [string match 8.*   [info patchlevel]]
+
+# A basic tcltest-like test command compatible with both Tcl 8.5+ and Jim Tcl.
+# Not the prettiest implementation.
+proc test {name descr args} {
+    incr ::numTests(Total)
+    set failed 0
+    set details {}
+
+    if {[dict exists $args -constraints]} {
+        foreach constr [dict get $args -constraints] {
+            if {![info exists ::testConstraints($constr)]
+                || !$::testConstraints($constr)} {
+                incr ::numTests(Skipped)
+                return
+            }
+        }
+    }
+
+    if {[dict exists $args -setup]
+        && [catch [dict get $args -setup] catchRes opts]} {
+        set failed 1
+        set details {during setup}
+    } else {
+        catch [dict get $args -body] catchRes opts
+        # Store the result of the body of the test for later.
+        set actual $catchRes
+
+        if {[dict get $opts -code] == 0} {
+            if {[dict exists $args -cleanup]
+                && [catch [dict get $args -cleanup] catchRes opts]} {
+                set failed 1
+                set details {during cleanup}
+            }
+            if {$actual ne [dict get $args -result]} {
+                set failed 1
+                set details {with wrong result}
+            }
+        } else {
+            set failed 1
+            set details {during run}
+        }
+    }
+    if {$failed} {
+        incr ::numTests(Failed)
+        puts stdout "==== $name $descr [concat FAILED $details]"
+        puts stdout "==== Contents of test case:\n[dict get $args -body]"
+        set code [dict get $opts -code]
+        puts stdout "---- errorCode: $code"
+        if {$code != 0} {
+            puts stdout "---- Result:    $catchRes"
+            if {$::testConstraints(jim)} {
+                puts stdout "---- errorInfo:"
+                foreach {proc file line} [dict get $opts -errorinfo] {
+                    puts stdout "in \[$proc\] on line $line of $file"
+                }
+            } else {
+                puts stdout "---- errorInfo: [dict get $opts -errorinfo]"
+            }
+        } else {
+            puts stdout "---- Expected result: [dict get $args -result]"
+            puts stdout "---- Actual result:   $actual"
+        }
+        puts stdout "==== $name $descr [concat FAILED $details]\n"
+    } else {
+        incr ::numTests(Passed)
+    }
+}
+
+# Decoded binary data encoded as a list of hex values.
+proc decode-hex data {
+    if {$::testConstraints(jim)} {
+        set result {}
+        foreach x $data {
+            pack v [expr 0x$x] -intle 8
+            append result $v
+        }
+        return $result
+    } else {
+        return [binary decode hex $data]
+    }
+}
+
+# Recursively remove whitespace from $list and its nested lists.
 proc sws {list {level 0}} {
     set result {}
     foreach item $list {
@@ -25,13 +108,48 @@ proc sws {list {level 0}} {
 # Pretty-print a dictionary mapping Huffman codes to values.
 proc format-codes codes {
     set result {}
+    set pairs {}
     foreach {code value} $codes {
+        lappend pairs [list $code $value]
+    }
+    foreach pair [lsort -index 0 $pairs] {
+        lassign $pair code value
         lappend result {*}[format {%s -> %x} $code $value]
     }
     return $result
 }
 
-tcltest::test li-lo-1.1 {::ptjd::hi-lo} -setup {
+# Return $d sorted by the key.
+proc dict-sort d {
+    set result {}
+    set keys [lsort [dict keys $d]]
+    foreach key $keys {
+        lappend result $key [dict get $d $key]
+    }
+    return $result
+}
+
+# A hack to get around the fact that Jim Tcl's dictionary operations do not
+# preserve the order.
+proc sort-frame frame {
+    set x [lindex $frame 1]
+    set componentsSorted {}
+    foreach component [dict get $x components] {
+        lappend componentsSorted [dict-sort $component]
+    }
+    dict set x components $componentsSorted
+    lset frame 1 [dict-sort $x]
+    return $frame
+}
+
+test decode-hex {Decoding hex-encoded binary data} -body {
+    binary scan [decode-hex {
+        FF DA 00 0C 03 01 00 02 11 03 11 00 3F 00
+    }] H28 scanned
+    return $scanned
+} -result ffda000c03010002110311003f00
+
+test li-lo-1.1 {::ptjd::hi-lo} -setup {
     set result {}
 } -body {
     lappend result [::ptjd::hi-lo 0x0F]
@@ -41,8 +159,8 @@ tcltest::test li-lo-1.1 {::ptjd::hi-lo} -setup {
     unset result
 } -result {{0 15} {15 0} {5 7}}
 
-tcltest::test read-tables-1.1 {QT} -body {
-    set x [::ptjd::read-tables \xFF\xD9 [binary decode hex {
+test read-tables-1.1 {QT} -body {
+    set x [::ptjd::read-tables \xFF\xD9 [decode-hex {
         FF DB 00 43 00 08 06 06 07 08 07 08 08 08 08 09 09 08 0A 0C 14 0D 0C
         0B 0B 0C 19 12 13 0F 14 1D 1A 1F 1E 1D 1A 1C 1C 20 24 2E 27 20 22 2C
         23 1C 1C 28 37 29 2C 30 31 34 34 34 1F 27 39 3D 38 32 3C 2E 33 34 32
@@ -82,8 +200,8 @@ tcltest::test read-tables-1.1 {QT} -body {
     } {{} {} {} {}} {{} {} {} {}}} 2]
 
 
-tcltest::test tables-1.2 {QT} -body {
-    set x [::ptjd::read-tables \xFF\xD9 [binary decode hex {
+test tables-1.2 {QT} -body {
+    set x [::ptjd::read-tables \xFF\xD9 [decode-hex {
         FF DB 00 43 00 02 01 01 01 01 01 02 01 01 01 02 02 02 02 02 04 03 02 02
         02 02 05 04 04 03 04 06 05 06 06 06 05 06 06 06 07 09 08 06 07 09 07 06
         06 08 0B 08 09 0A 0A 0A 0A 0A 06 08 0B 0C 0B 0A 0C 09 0A 0A 0A FF DB 00
@@ -123,7 +241,7 @@ tcltest::test tables-1.2 {QT} -body {
     }
     {{} {} {} {}} {{} {} {} {}}} 2]
 
-tcltest::test huffman-1.1 {Huffman codes} -body {
+test huffman-1.1 {Huffman codes} -body {
     format-codes [::ptjd::generate-huffman-codes {
         0 {} {4 5 6} 7 3 8 1 2 {} {} {} {} {} {} {} {}
     }]
@@ -139,7 +257,7 @@ tcltest::test huffman-1.1 {Huffman codes} -body {
     11111110 -> 2
 }]
 
-tcltest::test huffman-1.2 {Huffman codes} -body {
+test huffman-1.2 {Huffman codes} -body {
     format-codes [::ptjd::generate-huffman-codes {
         {} 1 {2 3 4} {0 5 17} {6 18 33} 49 {19 65} {7 20 21 34 81 97 113}
         {23 35 50 54 129 145 179} {22 66 82 85 86 117 147 177 209 210 211}
@@ -239,7 +357,7 @@ tcltest::test huffman-1.2 {Huffman codes} -body {
     1111111111111110 -> 85
 }]
 
-tcltest::test inverse-dct-1.1 {Inverse DCT} -body {
+test inverse-dct-1.1 {Inverse DCT} -body {
     ::ptjd::inverse-dct {
         -416  -33  -60   32   48  -40    0    0
            0  -24  -56   19   26    0    0    0
@@ -261,7 +379,7 @@ tcltest::test inverse-dct-1.1 {Inverse DCT} -body {
     -47  -34  -53  -74  -60  -47  -47  -41
 }]
 
-tcltest::test combine-blocks-1.1 {Combining blocks into a plane} -body {
+test combine-blocks-1.1 {Combining blocks into a plane} -body {
     ::ptjd::combine-blocks 23 18 [list \
         [lrepeat 64 0] [lrepeat 64 1] [lrepeat 64 2] \
         [lrepeat 64 3] [lrepeat 64 4] [lrepeat 64 5] \
@@ -287,41 +405,41 @@ tcltest::test combine-blocks-1.1 {Combining blocks into a plane} -body {
     6 6 6 6 6 6 6 6 7 7 7 7 7 7 7 7 8 8 8 8 8 8 8
 }]
 
-tcltest::test decode-1.1 {Complete file decode} -body {
-    ::ptjd::decode [binary decode hex {
-        FF D8 FF E0 00 10 4A 46 49 46 00 01 01 01 00 48 00 48 00 00 FF DB 00 43
-        00 02 01 01 01 01 01 02 01 01 01 02 02 02 02 02 04 03 02 02 02 02 05 04
-        04 03 04 06 05 06 06 06 05 06 06 06 07 09 08 06 07 09 07 06 06 08 0B 08
-        09 0A 0A 0A 0A 0A 06 08 0B 0C 0B 0A 0C 09 0A 0A 0A FF DB 00 43 01 02 02
-        02 02 02 02 05 03 03 05 0A 07 06 07 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
-        0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
-        0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A FF C0 00 11 08 00 10 00 10 03
-        01 11 00 02 11 01 03 11 01 FF C4 00 16 00 01 01 01 00 00 00 00 00 00 00
-        00 00 00 00 00 00 08 07 09 FF C4 00 1F 10 00 02 02 03 01 00 03 01 00 00
-        00 00 00 00 00 00 03 04 02 05 01 06 07 08 11 14 15 13 FF C4 00 17 01 00
-        03 01 00 00 00 00 00 00 00 00 00 00 00 00 00 05 06 09 08 FF C4 00 29 11
-        01 00 01 02 04 05 02 07 00 00 00 00 00 00 00 00 01 02 03 11 04 05 06 21
-        00 07 12 31 71 22 61 13 15 32 41 51 C1 F0 FF DA 00 0C 03 01 00 02 11 03
-        11 00 3F 00 2E 79 4F CE DC F3 CD F5 4C 68 5C 73 CE 55 DD 0B A0 CB 65 16
-        A9 5D D8 6A 37 15 83 71 B3 DD 36 C2 93 19 34 96 AC 04 4A AA 44 AB A4 B6
-        09 2B EC 06 C2 CA 58 B6 AD CC 31 51 3B 0C FE 71 C9 69 BC CA A5 06 74 63
-        74 8B 24 B9 E9 3D DF EE CF E1 E0 DE 0B 2B AF 3A B0 6E 31 EE EF 70 3E FE
-        7C 1E 3B F1 45 F7 2E E3 D9 3B 17 56 0F 6E EE FD 7E 8F 67 BD DA 15 29 20
-        96 BD 17 32 A5 3A E1 2C C5 15 56 21 41 15 8E BC 0B 06 05 12 28 66 07 32
-        00 D2 91 67 29 E4 93 52 8F 26 F5 86 A0 CF E9 D5 C7 53 1A 6D C6 CF D1 B0
-        82 21 66 C8 DB DE EF 7B B4 B3 93 1A AB 47 69 DD 29 53 2D CB A8 B4 4A 7D
-        2B 29 4A 0B 56 52 37 92 12 64 36 06 D3 8C 50 62 00 16 18 2D 73 DA DF 46
-        76 9A 2D 2E 8B CF 74 94 34 94 84 4E C9 8D BD 62 A1 F7 F2 A2 84 83 4F CD
-        D7 8A 31 13 EC 48 6B E4 21 94 FE 56 8E 4C 18 67 20 86 49 9C 21 F2 97 98
-        10 C6 62 F2 E8 60 F3 14 20 4A F8 56 32 97 4A F6 65 3E ED D6 FB 78 37 E2
-        0D 72 B3 98 98 7C FB 19 97 C3 07 8F 61 46 91 26 58 5B 32 63 EF 2A 8F 7B
-        BE 03 63 8C FB E7 5E C2 F3 A5 47 A1 AA EB 34 2E 23 CB 43 B2 6D 3D 0E 4B
-        ED 9B 6E E1 59 03 E9 22 5C 8F A9 F5 65 5C 83 C0 1F E3 56 82 0B 90 7F D4
-        A3 93 51 55 F6 B3 99 06 70 0C 41 59 E5 CA EC D2 B6 87 F9 86 61 88 AD 2A
-        14 E9 46 74 E9 53 02 B8 94 E5 D4 33 8B 2F 8B 39 32 10 2D 1E B8 C4 F5 0B
-        7D 81 81 D7 19 6C F1 7D 11 AD 20 A9 6B EE 96 B1 63 7D BF 5C 7F FF D9
-    }]
-} -result [sws {
+set fourColorsRaw {
+    FF D8 FF E0 00 10 4A 46 49 46 00 01 01 01 00 48 00 48 00 00 FF DB 00 43
+    00 02 01 01 01 01 01 02 01 01 01 02 02 02 02 02 04 03 02 02 02 02 05 04
+    04 03 04 06 05 06 06 06 05 06 06 06 07 09 08 06 07 09 07 06 06 08 0B 08
+    09 0A 0A 0A 0A 0A 06 08 0B 0C 0B 0A 0C 09 0A 0A 0A FF DB 00 43 01 02 02
+    02 02 02 02 05 03 03 05 0A 07 06 07 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
+    0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
+    0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A FF C0 00 11 08 00 10 00 10 03
+    01 11 00 02 11 01 03 11 01 FF C4 00 16 00 01 01 01 00 00 00 00 00 00 00
+    00 00 00 00 00 00 08 07 09 FF C4 00 1F 10 00 02 02 03 01 00 03 01 00 00
+    00 00 00 00 00 00 03 04 02 05 01 06 07 08 11 14 15 13 FF C4 00 17 01 00
+    03 01 00 00 00 00 00 00 00 00 00 00 00 00 00 05 06 09 08 FF C4 00 29 11
+    01 00 01 02 04 05 02 07 00 00 00 00 00 00 00 00 01 02 03 11 04 05 06 21
+    00 07 12 31 71 22 61 13 15 32 41 51 C1 F0 FF DA 00 0C 03 01 00 02 11 03
+    11 00 3F 00 2E 79 4F CE DC F3 CD F5 4C 68 5C 73 CE 55 DD 0B A0 CB 65 16
+    A9 5D D8 6A 37 15 83 71 B3 DD 36 C2 93 19 34 96 AC 04 4A AA 44 AB A4 B6
+    09 2B EC 06 C2 CA 58 B6 AD CC 31 51 3B 0C FE 71 C9 69 BC CA A5 06 74 63
+    74 8B 24 B9 E9 3D DF EE CF E1 E0 DE 0B 2B AF 3A B0 6E 31 EE EF 70 3E FE
+    7C 1E 3B F1 45 F7 2E E3 D9 3B 17 56 0F 6E EE FD 7E 8F 67 BD DA 15 29 20
+    96 BD 17 32 A5 3A E1 2C C5 15 56 21 41 15 8E BC 0B 06 05 12 28 66 07 32
+    00 D2 91 67 29 E4 93 52 8F 26 F5 86 A0 CF E9 D5 C7 53 1A 6D C6 CF D1 B0
+    82 21 66 C8 DB DE EF 7B B4 B3 93 1A AB 47 69 DD 29 53 2D CB A8 B4 4A 7D
+    2B 29 4A 0B 56 52 37 92 12 64 36 06 D3 8C 50 62 00 16 18 2D 73 DA DF 46
+    76 9A 2D 2E 8B CF 74 94 34 94 84 4E C9 8D BD 62 A1 F7 F2 A2 84 83 4F CD
+    D7 8A 31 13 EC 48 6B E4 21 94 FE 56 8E 4C 18 67 20 86 49 9C 21 F2 97 98
+    10 C6 62 F2 E8 60 F3 14 20 4A F8 56 32 97 4A F6 65 3E ED D6 FB 78 37 E2
+    0D 72 B3 98 98 7C FB 19 97 C3 07 8F 61 46 91 26 58 5B 32 63 EF 2A 8F 7B
+    BE 03 63 8C FB E7 5E C2 F3 A5 47 A1 AA EB 34 2E 23 CB 43 B2 6D 3D 0E 4B
+    ED 9B 6E E1 59 03 E9 22 5C 8F A9 F5 65 5C 83 C0 1F E3 56 82 0B 90 7F D4
+    A3 93 51 55 F6 B3 99 06 70 0C 41 59 E5 CA EC D2 B6 87 F9 86 61 88 AD 2A
+    14 E9 46 74 E9 53 02 B8 94 E5 D4 33 8B 2F 8B 39 32 10 2D 1E B8 C4 F5 0B
+    7D 81 81 D7 19 6C F1 7D 11 AD 20 A9 6B EE 96 B1 63 7D BF 5C 7F FF D9
+}
+
+set fourColorsDecoded [sws {
     16 16 3
     {
 
@@ -364,48 +482,54 @@ tcltest::test decode-1.1 {Complete file decode} -body {
     }
 } 2]
 
-tcltest::test read-frame-header-1.1 {Frame header} -body {
-    ::ptjd::read-frame-header [binary decode hex {
+test decode-1.1 {Complete file decode} -body {
+    ::ptjd::decode [decode-hex $::fourColorsRaw]
+} -result $fourColorsDecoded
+
+test read-frame-header-1.1 {Frame header} -body {
+    sort-frame [::ptjd::read-frame-header [decode-hex {
         FF C0 00 11 08 01 64 02 0D 03 01 11 00 02 11 01 03 11 01
-    }] 0
+    }] 0]
 } -result [sws {
     19
     {
+        components {{c 1 h 1 tq 0 v 1} {c 2 h 1 tq 1 v 1} {c 3 h 1 tq 1 v 1}}
+        nf 3
         p 8
-        y 356
         x 525
-        nf 3
-        components {{c 1 h 1 v 1 tq 0} {c 2 h 1 v 1 tq 1} {c 3 h 1 v 1 tq 1}}
+        y 356
     }} 1]
 
-tcltest::test read-frame-header-1.2 {Frame header} -body {
-    ::ptjd::read-frame-header [binary decode hex {
+test read-frame-header-1.2 {Frame header} -body {
+    sort-frame [::ptjd::read-frame-header [decode-hex {
         FF C0 00 11 08 04 C9 03 51 03 01 22 00 02 11 01 03 11 01 FF C4 00 00
-    }] 0
+    }] 0]
 } -result [sws {
     19
     {
-        p 8
-        y 1225
-        x 849
+        components {{c 1 h 2 tq 0 v 2} {c 2 h 1 tq 1 v 1} {c 3 h 1 tq 1 v 1}}
         nf 3
-        components {{c 1 h 2 v 2 tq 0} {c 2 h 1 v 1 tq 1} {c 3 h 1 v 1 tq 1}}
+        p 8
+        x 849
+        y 1225
     }} 1]
 
-tcltest::test read-scan-header-1.1 {Scan header} -body {
-    ::ptjd::read-scan-header [binary decode hex {
+test read-scan-header-1.3 {Scan header} -body {
+    sort-frame [::ptjd::read-scan-header [decode-hex {
         FF DA 00 0C 03 01 00 02 11 03 11 00 3F 00
-    }] 0
+    }] 0]
 } -result [sws {
     14
     {
+        ah 0
+        al 0
+        components {{cs 1 ta 0 td 0} {cs 2 ta 1 td 1} {cs 3 ta 1 td 1}}
         ns 3
-        components {{cs 1 td 0 ta 0} {cs 2 td 1 ta 1} {cs 3 td 1 ta 1}}
-        ss 0 se 63
-        ah 0 al 0
+        se 63
+        ss 0
     }} 1]
 
-tcltest::test get-bit-1.1 {Bit stream} -setup {
+test get-bit-1.1 {Bit stream} -setup {
     set bits {}
     set ptr 0
     set result {}
@@ -419,10 +543,11 @@ tcltest::test get-bit-1.1 {Bit stream} -setup {
     unset bit bits i ptr result
 } -result {0 0 0 1 0 0 0 1 1 1 1 1 0 0 0 0 1 0 1 0 0 1 0 1}
 
-# Exit with a nonzero status if there are failed tests.
-set failed [expr {$tcltest::numTests(Failed) > 0}]
+puts [format "%s:   Total %2u   Passed %2u   Failed %2u   Skipped %2u" \
+             $argv0 $::numTests(Total) $::numTests(Passed) \
+             $::numTests(Failed) $::numTests(Skipped)]
 
-tcltest::cleanupTests
-if {$failed} {
+# Exit with a nonzero status if there are failed tests.
+if {$numTests(Failed) > 0} {
     exit 1
 }
