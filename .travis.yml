@@ -1,9 +1,19 @@
 dist: trusty
-language: generic
+language: c
 sudo: false
 addons:
   apt:
     packages:
       - tcl
+install:
+  - git clone https://github.com/msteveb/jimtcl.git
+  - cd jimtcl
+  - git checkout --detach 0.75
+  - ./configure --enable-utf8 --math --disable-docs
+  - make
+  - cd ..
+before_script:
+  - export PATH="$PATH:$PWD/jimtcl"
 script:
   - tclsh tests.tcl
+  - jimsh tests.tcl
