@@ -18,7 +18,7 @@ namespace eval ::ptjd {
     unset alpha pi u x
 }
 
-proc ::escape-unprintable s {
+proc ::ptjd::escape-unprintable s {
     set result {}
     foreach c [split $s {}] {
         set code [scan $c %c]
