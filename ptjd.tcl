@@ -5,6 +5,7 @@ namespace eval ::ptjd {
     variable version 0.1.0
     variable inverseDctMatrix {}
 
+    # Precompute the inverse DCT matrix.
     set pi 3.1415926535897931
     for {set x 0} {$x < 8} {incr x} {
         for {set u 0} {$u < 8} {incr u} {
@@ -17,24 +18,38 @@ namespace eval ::ptjd {
     unset alpha pi u x
 }
 
+proc ::escape-unprintable s {
+    set result {}
+    foreach c [split $s {}] {
+        set code [scan $c %c]
+        if {(0x20 <= $code) && ($code <= 0x7F)} {
+            append result $c
+        } else {
+            append result [format \\x%X $code]
+        }
+    }
+    return $result
+}
+
 proc ::ptjd::assert-equal {actual expected} {
     if {$actual ne $expected} {
-        error "expected \"[binary encode hex $expected]\",\
-               but got \"[binary encode hex $actual]\""
+        error "expected \"[escape-unprintable $expected]\",\
+               but got \"[escape-unprintable $actual]\""
     }
 }
 
-proc ::ptjd::scan-at-ptr {format args} {
-    upvar 1 data data ptr ptr
-    foreach varName $args {
-        upvar 1 $varName $varName
+# Convert an integer to a string of binary digits. A [format %0${width}b $x]
+# substitute for Tcl 8.5.
+proc ::ptjd::int-to-binary-digits {x {width 0}} {
+    # The credit for the trick used here goes to RS (https://tcl.wiki/15598).
+    set bin [string trimleft [string map {
+        0 0000 1 0001 2 0010 3 0011 4 0100 5 0101 6 0110 7 0111
+        8 1000 9 1001 a 1010 b 1011 c 1100 d 1101 e 1110 f 1111
+    } [format %x $x]] 0]
+    if {($width) > 0 && ([string length $bin] < $width)} {
+        set bin [string repeat 0 [expr {$width - [string length $bin]}]]$bin
     }
-    binary scan $data [concat @$ptr $format] {*}$args
-}
-
-proc ::ptjd::hi-lo byte {
-    set byte [expr {$byte & 0xFF}]
-    return [list [expr {$byte >> 4}] [expr {$byte & 0x0F}]]
+    return $bin
 }
 
 proc ::ptjd::generate-huffman-codes table {
@@ -50,9 +65,9 @@ proc ::ptjd::generate-huffman-codes table {
                     break
                 }
             }
-            if {$used} continue
+            if {$used} { continue }
             set values [lassign $values value]
-            dict set codes [format %0${i}b $j] $value
+            dict set codes [int-to-binary-digits $j $i] $value
             lappend prefixes $i $j
         }
         if {$values ne {}} {
@@ -62,6 +77,26 @@ proc ::ptjd::generate-huffman-codes table {
     return $codes
 }
 
+# [binary scan] the data in the variable $data (in the caller's scope) starting
+# at the offset $ptr (ditto) and store the results in the variables (ditto) the
+# variables listed in $args.
+proc ::ptjd::scan-at-ptr {format args} {
+    upvar 1 data data ptr ptr
+    foreach varName $args {
+        upvar 1 $varName $varName
+    }
+    binary scan $data [concat @$ptr $format] {*}$args
+}
+
+# Return a list containing the high and the low nibble (4-bit value) of a byte.
+proc ::ptjd::hi-lo byte {
+    set byte [expr {$byte & 0xFF}]
+    return [list [expr {$byte >> 4}] [expr {$byte & 0x0F}]]
+}
+
+# Read quantization tables, Huffman tables and APP sections from $data starting
+# at $ptr until $until is encountered. Return a list containing the new values
+# for $ptr, $qts, $huffdc and $huffac.
 proc ::ptjd::read-tables {until data ptr qts huffdc huffac} {
     while {[llength $qts] < 4} {
         lappend qts {}
@@ -109,9 +144,11 @@ proc ::ptjd::read-tables {until data ptr qts huffdc huffac} {
                         lappend huffval $ln 
                         incr scanned $li
                     }
-                    lset huff[expr {$tc == 0 ? "dc" : "ac"}] \
-                         $th \
-                         [generate-huffman-codes $huffval]
+                    if {$tc == 0} {
+                        lset huffdc $th [generate-huffman-codes $huffval]
+                    } else {
+                        lset huffac $th [generate-huffman-codes $huffval]
+                    }
                 }
             }
             default {
@@ -168,10 +205,14 @@ proc ::ptjd::read-scan-header {data ptr} {
                                    ss $ss se $se ah $ah al $al]]
 }
 
-proc ::ptjd::get-bit {data ptr bits} {
-    if {$bits eq {}} {
-        scan-at-ptr B8 bits
-        if {$bits eq "11111111"} {
+# Read $n bits from $bits. If there aren't $n bits in $bits, read enough bytes
+# from $data starting at $ptr into $bits and advance $ptr accordingly. Escaped
+# \xFF values are accounted for. Return the updated $ptr and $bits, and the $n
+# read bits.
+proc ::ptjd::get-bits {data ptr bits n} {
+    while {[llength $bits] < $n} {
+        scan-at-ptr B8 byte
+        if {$byte eq "11111111"} {
             incr ptr 
             scan-at-ptr H2 second
             switch -exact -- $second {
@@ -188,18 +229,23 @@ proc ::ptjd::get-bit {data ptr bits} {
                 }
             }
         }
-        set bits [split $bits {}]
+        lappend bits {*}[split $byte {}]
         incr ptr
     }
-    set bits [lassign $bits bit]
-    return [list $ptr $bits $bit]
+    set result [lrange $bits 0 $n-1]
+    set bits [lrange $bits $n end]
+    return [list $ptr $bits $result]
 }
 
 # Read one Huffman code from $data. Return the associated value.
 proc ::ptjd::read-code {data ptr bits table {ct ""}} {
     set code {}
     while {![dict exists $table $code]} {
-        lassign [get-bit $data $ptr $bits] ptr bits bit
+        if {$bits eq {}} {
+            lassign [get-bits $data $ptr $bits 1] ptr bits bit
+        } else {
+            set bits [lassign $bits bit]
+        }
         if {$bit eq "EOI"} {
             return [list $ptr $bits EOI]
         } else {
@@ -213,16 +259,21 @@ proc ::ptjd::read-code {data ptr bits table {ct ""}} {
     return [list $ptr $bits [dict get $table $code]]
 }
 
+# Take a list of N bits and return a signed integer in the range
+# -2^N + 1 .. -2^(N - 1), 2^(N - 1) .. 2^N - 1 per the JPEG standard.
+# See "Table 5 - Huffman DC Value Encoding" at
+# http://www.impulseadventure.com/photo/jpeg-huffman-coding.html
 proc ::ptjd::restore-signed x {
     if {$x eq {}} {
         return 0
-    } elseif {[string index $x 0] == 0} {
-        return [expr -0b[string map {0 1 1 0} $x]]
+    } elseif {[lindex $x 0] == 0} {
+        return [expr -0b[string map {0 1 1 0} [join $x {}]]]
     } else {
-        return [expr 0b$x]
+        return [expr 0b[join $x {}]]
     }
 }
 
+# Read one MCU block.
 proc ::ptjd::read-block {data ptr bits dct act {compN ""}} {
     # The DC component.
     set value {}
@@ -230,12 +281,12 @@ proc ::ptjd::read-block {data ptr bits dct act {compN ""}} {
     if {$value eq "EOI"} {
         return [list $ptr $bits {}]
     }
-    set dc {}
-    for {set i 0} {$i < $value} {incr i} {
-        lassign [get-bit $data $ptr $bits] ptr bits bit
-        append dc $bit
+
+    set dc 0
+    if {$value > 0} {
+        lassign [get-bits $data $ptr $bits $value] ptr bits dc
+        set dc [restore-signed $dc]
     }
-    set dc [restore-signed $dc]
 
     # The AC component.
     set ac {}
@@ -255,10 +306,10 @@ proc ::ptjd::read-block {data ptr bits dct act {compN ""}} {
             for {set i 0} {$i < $r} {incr i} {
                 lappend ac 0
             }
-            set c {}
-            for {set i 0} {$i < $s} {incr i} {
-                lassign [get-bit $data $ptr $bits] ptr bits bit
-                append c $bit
+
+            set c 0
+            if {$s > 0} {
+                lassign [get-bits $data $ptr $bits $s] ptr bits c
             }
             lappend ac [restore-signed $c]
         }
@@ -306,36 +357,138 @@ proc ::ptjd::inverse-dct block {
                 set c1 [lindex $m [expr {8*$x + $u}]]
                 for {set v 0} {$v < 8} {incr v} {
                     set sum [expr {
-                        $sum + $c1*[lindex $block [expr {8*$v + $u}]]*
-                                   [lindex $m [expr {8*$y + $v}]]
+                        $sum + $c1*[lindex $block [expr {8*$v + $u}]]
+                                  *[lindex $m [expr {8*$y + $v}]]
                     }]
                 }
             }
-            lappend result [expr {round($sum / 4.0)}]
+            lappend result [expr {round($sum/4.0)}]
         }   
     }
     return $result
 }
 
-# Combine the blocks in $blocks into a plane and crop it to $width by $height.
-proc ::ptjd::combine-blocks {width height blocks} {
-    set hor  [expr {($width  + 7)/8}]
-    set vert [expr {($height + 7)/8}]
+# Return the number of blocks horizontally or vertically in an image component
+# given the matching number of pixels, the scaling factor and the maximum
+# horizontal/vertical scaling factor for the image as a whole.
+proc ::ptjd::block-count {pixels scale max} {
+    set count [expr {($pixels + (8 * $max - 1))/(8*$max)*$max/$scale}]
+    if {$count == 0} { set count 1 }
+    return $count
+}
+
+# A helper proc for [combine-blocks].
+proc ::ptjd::put-block {offset block} {
+    upvar 1 plane plane
+    for {set j 0} {$j < 64} {incr j 8} {
+        set y [expr {$offset + $j/8}]
+        lappend plane($y) {*}[lrange $block $j $j+7]
+    }
+}
+
+# Combine the blocks in $blocks into a color plane. $hor and $vert are the
+# horizontal and vertical block count respectively and $h and $v are the
+# corresponding scaling factors.
+proc ::ptjd::combine-blocks {hor vert h v blocks} {
     assert-equal [llength $blocks] [expr {$hor * $vert}]
     for {set i 0} {$i < 8*$vert} {incr i} {
         set plane($i) {}
     }
+
     set i 0
-    foreach block $blocks {
-        for {set j 0} {$j < 64} {incr j 8} {
-            set y [expr {$i/$hor*8 + $j/8}]
-            lappend plane($y) {*}[lrange $block $j $j+7]
+    for {set vPos 0} {$vPos < $vert} {incr vPos $v} {
+        for {set hPos 0} {$hPos < $hor} {incr hPos $h} {
+            for {set vOffset 0} {$vOffset < $v} {incr vOffset} {
+                for {set hOffset 0} {$hOffset < $h} {incr hOffset} {
+                    put-block [expr {($vPos + $vOffset)*8}] [lindex $blocks $i]
+                    incr i
+                }
+            }
         }
-        incr i
     }
+
     set result {}
-    for {set i 0} {$i < $height} {incr i} {
-        lappend result {*}[lrange $plane($i) 0 $width-1]
+    for {set i 0} {$i < 8*$vert} {incr i} {
+        lappend result {*}$plane($i)
+    }
+    assert-equal [llength $result] [expr {[llength $blocks] * 64}]
+    return $result
+}
+
+# Crudely upscale a color plane by duplicating values. Each of $scaleH and
+# $scaleV should be either 1 (no upscaling) or 2 (upscale in this direction).
+proc ::ptjd::scale-double {hor vert scaleH scaleV plane} {
+    if {($scaleH ni {1 2})} {
+        error "scaleH should be 1 or 2 (\"$scaleH\" given)"
+    }
+    if {($scaleV ni {1 2})} {
+        error "scaleV should be 1 or 2 (\"$scaleV\" given)"
+    }
+    if {($scaleH == 1) && ($scaleV == 1)} { return $plane }
+    set hor8 [expr {$hor*8}]
+    for {set i 0} {$i < $hor8*$vert*8} {incr i $hor8} {
+        set line [lrange $plane $i [expr {$i + $hor8 - 1}]]
+        if {$scaleH == 2} {
+            set scaled {}
+            foreach c $line {
+                lappend scaled $c $c
+            }
+            set line $scaled
+        }
+        lappend result {*}$line
+        if {$scaleV == 2} {
+            lappend result {*}$line
+        }
+    }
+    assert-equal [expr {$scaleH*$scaleV*[llength $plane]}] [llength $result]
+    return $result
+}
+
+# Upscale a color plane somewhat less crudely. Each of $scaleH and $scaleV
+# should be either 1 (no upscaling) or 2 (upscale in this direction).
+proc ::ptjd::scale-linear {hor vert scaleH scaleV plane} {
+    if {($scaleH ni {1 2})} {
+        error "scaleH should be 1 or 2 (\"$scaleH\" given)"
+    }
+    if {($scaleV ni {1 2})} {
+        error "scaleV should be 1 or 2 (\"$scaleV\" given)"
+    }
+    if {($scaleH == 1) && ($scaleV == 1)} { return $plane }
+    set hor8 [expr {$hor*8}]
+    set prevLine {}
+    for {set i 0} {$i < $hor8*$vert*8} {incr i $hor8} {
+        set line [lrange $plane $i [expr {$i + $hor8 - 1}]]
+        if {$scaleH == 2} {
+            set scaled {}
+            set prevC [lindex $line 0]
+            foreach c $line {
+                lappend scaled [expr {($prevC + $c) / 2}] $c
+                set prevC $c
+            }
+            set line $scaled
+        }
+        if {$prevLine eq {}} { set prevLine $line }
+        if {$scaleV == 1} {
+            lappend result {*}$line
+        } else { ;# $scaleV == 2
+            set interp {}
+            foreach c1 $prevLine c2 $line {
+                lappend interp [expr {($c1 + $c2) / 2}]
+            }
+            set prevLine $line
+            lappend result {*}$interp {*}$line
+        }
+    }
+    assert-equal [expr {$scaleH*$scaleV*[llength $plane]}] [llength $result]
+    return $result
+}
+
+# Crop a color plane to $width by $height.
+proc ::ptjd::crop {hor width height plane} {
+    set hor8 [expr {$hor*8}]
+    set result {}
+    for {set i 0} {$i < $hor8*$height} {incr i $hor8} {
+        lappend result {*}[lrange $plane $i [expr {$i + $width - 1}]]
     }
     return $result
 }
@@ -350,7 +503,7 @@ proc ::ptjd::clamp value {
     }
 }
 
-proc ::ptjd::ycbcr2rgb {y cb cr} {
+proc ::ptjd::ycbcr-to-rgb {y cb cr} {
     set r [clamp [expr {
         round($y +                      + 1.402   *($cr - 128))
     }]]
@@ -363,7 +516,7 @@ proc ::ptjd::ycbcr2rgb {y cb cr} {
     return [list $r $g $b]
 }
 
-proc ::ptjd::decode data {
+proc ::ptjd::decode {data {scaler ::ptjd::scale-double}} {
     set ptr 0
     set length [string length $data]
 
@@ -395,15 +548,19 @@ proc ::ptjd::decode data {
     lassign [read-scan-header $data $ptr] ptr scan
 
     # Read and decode the MCUs of the image.
-    set bits {} ;# For the proc get-bit.
-    set scanOrder {}
+    set bits {} ;# A bit buffer for [get-bits] and procs that use it.
     for {set i 1} {$i <= [dict get $frame nf]} {incr i} {
         set prevDc($i) 0
         set planeBlocks($i) {}
-        lappend scanOrder $i
+        incr i -1
+        set component [lindex [dict get $frame components] $i]
+        set repeats [expr {[dict get $component h]*[dict get $component v]}]
+        lappend scanOrder {*}[lrepeat $repeats $i]
+        incr i
     }
+    unset component repeats
     while 1 {
-        for {set i 0} {$i < [dict get $scan ns]} {incr i} {
+        foreach i $scanOrder {
             # Read a block.
             set scanComp [lindex [dict get $scan components] $i]
             set cs [dict get $scanComp cs]
@@ -441,9 +598,27 @@ proc ::ptjd::decode data {
 
     # Combine 8x8 blocks into planes.
     set planes {}
+    set width  [dict get $frame x]
+    set height [dict get $frame y]
+    set maxH 0
+    set maxV 0
     for {set i 1} {$i <= [dict get $frame nf]} {incr i} {
-        set plane [combine-blocks [dict get $frame x] \
-                                  [dict get $frame y] \
+        set component [lindex [dict get $frame components] [expr {$i - 1}]]
+        set h [dict get $component h]
+        set v [dict get $component v]
+        if {$h > $maxH} { set maxH $h }
+        if {$v > $maxV} { set maxV $v }
+    }
+    for {set i 1} {$i <= [dict get $frame nf]} {incr i} {
+        set component [lindex [dict get $frame components] [expr {$i - 1}]]
+        set h [dict get $component h]
+        set v [dict get $component v]
+        set scaleH [expr {$maxH/$h}]
+        set scaleV [expr {$maxV/$v}]
+        set horBlocks  [block-count $width  $scaleH $maxH]
+        set vertBlocks [block-count $height $scaleV $maxV]
+        unset component
+        set plane [combine-blocks $horBlocks $vertBlocks $h $v \
                                   $planeBlocks($i)]
         unset planeBlocks($i)
         set shifted {}
@@ -451,7 +626,9 @@ proc ::ptjd::decode data {
             lappend shifted [clamp [expr {$x + 128}]]
         }
         unset plane
-        lappend planes $shifted
+        set scaled [$scaler $horBlocks $vertBlocks $scaleH $scaleV $shifted]
+        unset shifted
+        lappend planes [crop [expr {$scaleH*$horBlocks}] $width $height $scaled]
     }
 
     if {[dict get $frame nf] == 1} {
@@ -461,13 +638,39 @@ proc ::ptjd::decode data {
         foreach  y [lindex $planes 0] \
                 cb [lindex $planes 1] \
                 cr [lindex $planes 2] {
-            lappend decoded {*}[ycbcr2rgb $y $cb $cr]
+            lappend decoded {*}[ycbcr-to-rgb $y $cb $cr]
         }
     }
     return [list [dict get $frame x] \
                  [dict get $frame y] \
                  [dict get $frame nf] \
                  $decoded]
+}
+
+proc ::ptjd::image-to-ppm {width height color data} {
+    return "P[expr {$color == 1 ? 2 : 3}]\n$width $height\n255\n$data"
+}
+
+proc ::ptjd::ppm-to-image ppm {
+    scan $ppm "P%u\n%u %u\n255\n%n" format width height offset
+    set data {}
+    # Remove whitespace.
+    foreach x [string range $ppm $offset end] {
+        lappend data $x
+    }
+    if {$format == 2} {
+        set color 1
+    } elseif {$format == 3} {
+        set color 3
+    } else {
+        error "only P2 and P3 are supported (\"$format\" given)"
+    }
+    if {$color == 1} {
+        assert-equal [llength $data] [expr {$width * $height}]
+    } else {
+        assert-equal [llength $data] [expr {$width * $height * 3}]
+    }
+    return [list $width $height $color $data]
 }
 
 namespace eval ::ptjd::demo {}
@@ -481,8 +684,7 @@ proc ::ptjd::demo::main {argv0 argv} {
     set h [open $filename rb]
     set data [read $h]
     close $h
-    lassign [::ptjd::decode $data] width height color data
-    puts "P[expr {$color == 1 ? 2 : 3}]\n$width $height\n255\n$data"
+    puts [::ptjd::image-to-ppm {*}[::ptjd::decode $data]]
 }
 
 # If this is the main script...

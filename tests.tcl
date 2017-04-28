@@ -8,11 +8,18 @@ set numTests(Passed)   0
 set numTests(Failed)   0
 set numTests(Skipped)  0
 
-set testConstraints(jim) [string match *jim* [info nameofexecutable]]
-set testConstraints(tcl) [string match 8.*   [info patchlevel]]
+set testConstraints(jim) [expr {
+    ([info exists ::tcl_platform(engine)] && ($::tcl_platform(engine) eq "Jim"))
+    || [string match *jim* [info nameofexecutable]]
+}]
+set testConstraints(tcl) [expr {
+    ([info exists ::tcl_platform(engine)] && ($::tcl_platform(engine) eq "Tcl"))
+    || [string match 8.* [info patchlevel]]
+}]
+
+set debugChan stdout ;# The channel to which we'll print errors.
 
 # A basic tcltest-like test command compatible with both Tcl 8.5+ and Jim Tcl.
-# Not the prettiest implementation.
 proc test {name descr args} {
     incr ::numTests(Total)
     set failed 0
@@ -21,58 +28,88 @@ proc test {name descr args} {
     if {[dict exists $args -constraints]} {
         foreach constr [dict get $args -constraints] {
             if {![info exists ::testConstraints($constr)]
-                || !$::testConstraints($constr)} {
+                    || !$::testConstraints($constr)} {
                 incr ::numTests(Skipped)
                 return
             }
         }
     }
 
-    if {[dict exists $args -setup]
-        && [catch [dict get $args -setup] catchRes opts]} {
-        set failed 1
-        set details {during setup}
-    } else {
+    # A dummy [for] to use [break] to go to the end of the block on error. This
+    # idiom was described by Lars H on https://tcl.wiki/901.
+    for {} 1 break {
+        if {[dict exists $args -setup]
+                && [catch [dict get $args -setup] catchRes opts]} {
+            set failed 1
+            set details {during setup}
+            break
+        }
+
         catch [dict get $args -body] catchRes opts
         # Store the result of the body of the test for later.
         set actual $catchRes
+        set expected [dict get $args -result]
 
-        if {[dict get $opts -code] == 0} {
-            if {[dict exists $args -cleanup]
-                && [catch [dict get $args -cleanup] catchRes opts]} {
-                set failed 1
-                set details {during cleanup}
-            }
-            if {$actual ne [dict get $args -result]} {
-                set failed 1
-                set details {with wrong result}
-            }
-        } else {
+        if {[dict get $opts -code] != 0} {
             set failed 1
             set details {during run}
+            break
+        }
+
+        if {[dict exists $args -cleanup]
+                && [catch [dict get $args -cleanup] catchRes opts]} {
+            set failed 1
+            set details {during cleanup}
+            break
+        }
+
+        if {$actual ne $expected} {
+            set failed 1
+            set details {with wrong result}
         }
     }
+
     if {$failed} {
         incr ::numTests(Failed)
-        puts stdout "==== $name $descr [concat FAILED $details]"
-        puts stdout "==== Contents of test case:\n[dict get $args -body]"
-        set code [dict get $opts -code]
-        puts stdout "---- errorCode: $code"
-        if {$code != 0} {
-            puts stdout "---- Result:    $catchRes"
+        puts $::debugChan "==== $name $descr [concat FAILED $details]"
+        puts $::debugChan "==== Contents of test case:\n[dict get $args -body]"
+        puts $::debugChan "---- errorCode: [dict get $opts -code]"
+        if {[dict get $opts -code] != 0} {
+            # The test returned an error code.
+            puts $::debugChan "---- Result:    $catchRes"
+            # Prettify a Jim Tcl stack trace.
             if {$::testConstraints(jim)} {
-                puts stdout "---- errorInfo:"
+                puts $::debugChan "---- errorInfo:"
                 foreach {proc file line} [dict get $opts -errorinfo] {
-                    puts stdout "in \[$proc\] on line $line of $file"
+                    puts $::debugChan "in \[$proc\] on line $line of $file"
                 }
             } else {
-                puts stdout "---- errorInfo: [dict get $opts -errorinfo]"
+                puts $::debugChan "---- errorInfo: [dict get $opts -errorinfo]"
             }
         } else {
-            puts stdout "---- Expected result: [dict get $args -result]"
-            puts stdout "---- Actual result:   $actual"
+            # The test returned a wrong result.
+            if {$::tcl_platform(platform) eq "unix"} {
+                set color(normal) "\033\[0m"
+                set color(green)  "\033\[0;32m"
+                set color(red)    "\033\[0;31m"
+            } else {
+                set color(normal) {}
+                set color(green)  {}
+                set color(red)    {}
+            }
+            # Find the first differing character.
+            for {set i 0} {$i < [string length $expected]} {incr i} {
+                if {[string index $actual $i] ne [string index $expected $i]} {
+                    break
+                }
+            }
+            set highlighted    $color(green)[string range $actual 0 $i-1]
+            append highlighted $color(red)[string range $actual $i end]
+            append highlighted $color(normal)
+            puts $::debugChan "---- Expected result: $expected"
+            puts $::debugChan "---- Actual result:   $highlighted"
         }
-        puts stdout "==== $name $descr [concat FAILED $details]\n"
+        puts $::debugChan "==== $name $descr [concat FAILED $details]\n"
     } else {
         incr ::numTests(Passed)
     }
@@ -93,14 +130,11 @@ proc decode-hex data {
 }
 
 # Recursively remove whitespace from $list and its nested lists.
-proc sws {list {level 0}} {
+proc sws {list {level 1}} {
+    if {$level <= 0} { return $list }
     set result {}
     foreach item $list {
-        if {$level == 0} {
-            lappend result $item
-        } else {
-            lappend result [sws $item [expr {$level - 1}]]
-        }
+        lappend result [sws $item [expr {$level - 1}]]
     }
     return $result
 }
@@ -142,12 +176,56 @@ proc sort-frame frame {
     return $frame
 }
 
-test decode-hex {Decoding hex-encoded binary data} -body {
+proc read-test-file filename {
+    set h [open [file join test-data $filename] rb]
+    set result [read $h]
+    close $h
+    return $result
+}
+
+# Flatten nested lists.
+proc flatten {list {n 1}} {
+    if {$n <= 0} { return $list }
+    set result {}
+    foreach x $list {
+        lappend result {*}[flatten $x [expr {$n - 1}]]
+    }
+    return $result
+}
+
+test decode-hex-1.1 {Decoding hex-encoded binary data} -body {
     binary scan [decode-hex {
         FF DA 00 0C 03 01 00 02 11 03 11 00 3F 00
     }] H28 scanned
     return $scanned
 } -result ffda000c03010002110311003f00
+
+test int-to-binary-digits-1.1 {Convert an integer to its binary
+                               representation} -body {
+    list [::ptjd::int-to-binary-digits   34   ] \
+         [::ptjd::int-to-binary-digits   34  1] \
+         [::ptjd::int-to-binary-digits   34  6] \
+         [::ptjd::int-to-binary-digits   34 10] \
+         [::ptjd::int-to-binary-digits 4096 10]
+} -result {100010 100010 100010 0000100010 1000000000000}
+
+test block-count-1.1 {Map pixel count and scaling factor to block count} -body {
+    list [::ptjd::block-count   5 1 1] \
+         [::ptjd::block-count   5 1 2] \
+         [::ptjd::block-count   5 2 2] \
+         [::ptjd::block-count   8 1 1] \
+         [::ptjd::block-count   8 1 2] \
+         [::ptjd::block-count   8 2 2] \
+         [::ptjd::block-count  16 1 1] \
+         [::ptjd::block-count  16 1 2] \
+         [::ptjd::block-count  16 2 2] \
+         [::ptjd::block-count 418 1 1] \
+         [::ptjd::block-count 418 1 2] \
+         [::ptjd::block-count 418 2 2] \
+         [::ptjd::block-count 840 1 1] \
+         [::ptjd::block-count 840 1 2] \
+         [::ptjd::block-count 840 2 2]
+} -result [sws {1 2 1  1 2 1   2 2 1   53 54 27   105 106 53}]
 
 test li-lo-1.1 {::ptjd::hi-lo} -setup {
     set result {}
@@ -197,7 +275,7 @@ test read-tables-1.1 {QT} -body {
             64 64 64 64 64 64 64 64
             64 64 64 64 64 64 64 64
         } {} {}
-    } {{} {} {} {}} {{} {} {} {}}} 2]
+    } {{} {} {} {}} {{} {} {} {}}} 3]
 
 
 test tables-1.2 {QT} -body {
@@ -239,7 +317,7 @@ test tables-1.2 {QT} -body {
             10  10  10  10  10  10  10  10 
         } {} {}
     }
-    {{} {} {} {}} {{} {} {} {}}} 2]
+    {{} {} {} {}} {{} {} {} {}}} 3]
 
 test huffman-1.1 {Huffman codes} -body {
     format-codes [::ptjd::generate-huffman-codes {
@@ -379,11 +457,11 @@ test inverse-dct-1.1 {Inverse DCT} -body {
     -47  -34  -53  -74  -60  -47  -47  -41
 }]
 
-test combine-blocks-1.1 {Combining blocks into a plane} -body {
-    ::ptjd::combine-blocks 23 18 [list \
+test combine-and-crop-1.1 {Combining blocks into a plane} -body {
+    ::ptjd::crop 3 23 18 [::ptjd::combine-blocks 3 3 1 1 [list \
         [lrepeat 64 0] [lrepeat 64 1] [lrepeat 64 2] \
         [lrepeat 64 3] [lrepeat 64 4] [lrepeat 64 5] \
-        [lrepeat 64 6] [lrepeat 64 7] [lrepeat 64 8]]
+        [lrepeat 64 6] [lrepeat 64 7] [lrepeat 64 8]]]
 } -result [sws {
     0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2
     0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2
@@ -405,86 +483,121 @@ test combine-blocks-1.1 {Combining blocks into a plane} -body {
     6 6 6 6 6 6 6 6 7 7 7 7 7 7 7 7 8 8 8 8 8 8 8
 }]
 
-set fourColorsRaw {
-    FF D8 FF E0 00 10 4A 46 49 46 00 01 01 01 00 48 00 48 00 00 FF DB 00 43
-    00 02 01 01 01 01 01 02 01 01 01 02 02 02 02 02 04 03 02 02 02 02 05 04
-    04 03 04 06 05 06 06 06 05 06 06 06 07 09 08 06 07 09 07 06 06 08 0B 08
-    09 0A 0A 0A 0A 0A 06 08 0B 0C 0B 0A 0C 09 0A 0A 0A FF DB 00 43 01 02 02
-    02 02 02 02 05 03 03 05 0A 07 06 07 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
-    0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
-    0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A FF C0 00 11 08 00 10 00 10 03
-    01 11 00 02 11 01 03 11 01 FF C4 00 16 00 01 01 01 00 00 00 00 00 00 00
-    00 00 00 00 00 00 08 07 09 FF C4 00 1F 10 00 02 02 03 01 00 03 01 00 00
-    00 00 00 00 00 00 03 04 02 05 01 06 07 08 11 14 15 13 FF C4 00 17 01 00
-    03 01 00 00 00 00 00 00 00 00 00 00 00 00 00 05 06 09 08 FF C4 00 29 11
-    01 00 01 02 04 05 02 07 00 00 00 00 00 00 00 00 01 02 03 11 04 05 06 21
-    00 07 12 31 71 22 61 13 15 32 41 51 C1 F0 FF DA 00 0C 03 01 00 02 11 03
-    11 00 3F 00 2E 79 4F CE DC F3 CD F5 4C 68 5C 73 CE 55 DD 0B A0 CB 65 16
-    A9 5D D8 6A 37 15 83 71 B3 DD 36 C2 93 19 34 96 AC 04 4A AA 44 AB A4 B6
-    09 2B EC 06 C2 CA 58 B6 AD CC 31 51 3B 0C FE 71 C9 69 BC CA A5 06 74 63
-    74 8B 24 B9 E9 3D DF EE CF E1 E0 DE 0B 2B AF 3A B0 6E 31 EE EF 70 3E FE
-    7C 1E 3B F1 45 F7 2E E3 D9 3B 17 56 0F 6E EE FD 7E 8F 67 BD DA 15 29 20
-    96 BD 17 32 A5 3A E1 2C C5 15 56 21 41 15 8E BC 0B 06 05 12 28 66 07 32
-    00 D2 91 67 29 E4 93 52 8F 26 F5 86 A0 CF E9 D5 C7 53 1A 6D C6 CF D1 B0
-    82 21 66 C8 DB DE EF 7B B4 B3 93 1A AB 47 69 DD 29 53 2D CB A8 B4 4A 7D
-    2B 29 4A 0B 56 52 37 92 12 64 36 06 D3 8C 50 62 00 16 18 2D 73 DA DF 46
-    76 9A 2D 2E 8B CF 74 94 34 94 84 4E C9 8D BD 62 A1 F7 F2 A2 84 83 4F CD
-    D7 8A 31 13 EC 48 6B E4 21 94 FE 56 8E 4C 18 67 20 86 49 9C 21 F2 97 98
-    10 C6 62 F2 E8 60 F3 14 20 4A F8 56 32 97 4A F6 65 3E ED D6 FB 78 37 E2
-    0D 72 B3 98 98 7C FB 19 97 C3 07 8F 61 46 91 26 58 5B 32 63 EF 2A 8F 7B
-    BE 03 63 8C FB E7 5E C2 F3 A5 47 A1 AA EB 34 2E 23 CB 43 B2 6D 3D 0E 4B
-    ED 9B 6E E1 59 03 E9 22 5C 8F A9 F5 65 5C 83 C0 1F E3 56 82 0B 90 7F D4
-    A3 93 51 55 F6 B3 99 06 70 0C 41 59 E5 CA EC D2 B6 87 F9 86 61 88 AD 2A
-    14 E9 46 74 E9 53 02 B8 94 E5 D4 33 8B 2F 8B 39 32 10 2D 1E B8 C4 F5 0B
-    7D 81 81 D7 19 6C F1 7D 11 AD 20 A9 6B EE 96 B1 63 7D BF 5C 7F FF D9
-}
+test scale-1.1 {Scale a color plane} -body {
+    ::ptjd::scale-double 2 1 1 2 [::ptjd::combine-blocks 2 1 1 1 [list \
+        [lrepeat 64 0] [lrepeat 64 1]]]
+} -result [sws {
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+}]
 
-set fourColorsDecoded [sws {
-    16 16 3
-    {
+test scale-1.2 {Scale a color plane} -body {
+    ::ptjd::scale-double 1 2 2 1 [::ptjd::combine-blocks 1 2 1 1 [list \
+        [lrepeat 64 0] [lrepeat 64 1]]]
+} -result [sws {
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+}]
 
-        1 3 0 1 0 0 12 0 4 12 0 4 1 1 0 4 0 0 11 0 6 251 251 249 255 251 250 255
-        240 241 247 215 218 218 18 21 249 4 0 254 1 0 248 5 1 245 3 1 0 1 0 0 8
-        0 0 5 2 2 0 8 2 1 0 254 254 254 255 248 249 30 4 5 254 243 247 255 228
-        243 186 28 19 229 9 21 243 6 0 249 6 10 251 0 14 249 2 23 5 2 11 1 4 0 5
-        4 2 251 255 245 254 255 253 251 251 243 8 0 2 38 4 3 255 223 224 189 25
-        34 219 15 26 245 4 10 251 0 0 242 1 17 243 0 44 232 1 35 2 0 18 9 0 6
-        249 254 255 255 254 255 9 0 5 0 0 4 255 250 255 255 237 231 164 39 47
-        209 14 28 228 11 19 237 1 13 247 8 11 251 0 31 243 4 71 232 0 74 0 4 0
-        255 254 255 13 0 30 12 0 23 5 0 11 246 252 250 7 3 0 48 4 0 162 34 35
-        189 36 20 197 31 31 206 23 17 233 0 4 250 2 36 224 0 77 229 0 119 255
-        249 244 19 0 26 111 63 121 25 0 41 253 245 255 21 6 27 21 0 17 58 0 15
-        159 38 81 252 202 239 254 207 249 255 206 241 224 12 50 226 4 65 225 8
-        125 205 0 130 255 225 255 118 61 138 29 0 53 33 0 62 255 222 255 104 49
-        142 125 52 133 254 221 255 255 209 251 169 38 142 174 21 145 170 16 130
-        212 7 128 208 0 131 205 8 158 191 0 172 18 11 53 83 72 114 102 62 125
-        255 228 254 41 4 81 116 53 160 111 52 162 254 217 251 124 40 162 137 29
-        166 252 208 244 148 26 186 176 16 166 173 7 165 179 14 179 175 14 180 67
-        205 83 102 186 108 85 67 125 113 53 143 85 72 125 78 78 116 87 70 140
-        166 123 231 68 0 124 126 35 190 56 0 181 69 0 183 142 34 198 96 0 128 98
-        3 133 132 36 170 50 221 47 72 205 80 234 253 249 247 255 255 111 172 130
-        109 174 142 68 75 129 167 126 222 255 217 255 116 49 190 38 4 176 43 0
-        172 120 39 206 255 207 255 251 212 255 251 227 255 94 189 89 191 253 190
-        188 255 189 60 205 64 38 225 48 62 212 87 64 92 114 167 126 228 254 216
-        255 103 46 177 38 9 119 255 232 255 108 45 198 253 210 255 70 0 155 255
-        209 251 192 255 183 180 250 180 69 200 86 54 215 77 40 224 52 66 202 78
-        59 85 98 252 227 255 78 5 148 116 50 202 253 228 255 251 226 245 99 39
-        222 66 0 193 116 33 229 121 41 234 28 228 31 65 213 77 41 99 75 67 89
-        103 98 182 133 108 178 144 73 81 102 255 240 255 41 8 139 103 48 227 104
-        40 238 103 39 247 95 48 252 51 2 216 106 34 230 117 33 219 0 252 0 41
-        224 58 114 177 156 54 84 95 44 106 65 41 102 69 238 252 253 133 146 191
-        242 239 255 36 0 191 43 0 220 41 0 231 31 0 237 30 0 222 53 2 205 253
-        211 255 2 255 5 18 243 27 37 227 41 51 219 72 64 217 65 74 195 82 215
-        255 232 235 255 254 7 28 155 12 10 215 9 1 222 9 6 247 1 1 247 8 2 226
-        27 0 200 255 228 251 5 255 14 0 255 17 1 251 4 10 255 9 29 231 35 164
-        252 165 205 255 217 116 153 180 10 34 166 4 9 223 4 7 246 0 1 253 2 5
-        242 1 1 239 7 9 208 13 1 187
-    }
-} 2]
+test scale-2.1 {Scale a color plane} -body {
+    ::ptjd::scale-linear 2 1 1 2 [::ptjd::combine-blocks 2 1 1 1 [list \
+        [lrepeat 64 0] [lrepeat 64 1]]]
+} -result [sws {
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+    0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+}]
+
+test scale-2.2 {Scale a color plane} -body {
+    ::ptjd::scale-linear 1 2 2 1 [::ptjd::combine-blocks 1 2 1 1 [list \
+        [lrepeat 64 0] [lrepeat 64 1]]]
+} -result [sws {
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+}]
 
 test decode-1.1 {Complete file decode} -body {
-    ::ptjd::decode [decode-hex $::fourColorsRaw]
-} -result $fourColorsDecoded
+    ::ptjd::decode [read-test-file ycbcr.jpg]
+} -result [list \
+    16 16 3 \
+    [flatten [list [lrepeat 8 [lrepeat 24        0 ] [lrepeat 8 {254 0 0}]] \
+                   [lrepeat 8 [lrepeat  8 {0 255 1}] [lrepeat 8 {0 0 254}]]] \
+             4]]
+
+test decode-1.2 {Complete file decode} -body {
+    ::ptjd::decode [read-test-file grayscale.jpg]
+} -result [::ptjd::ppm-to-image [read-test-file grayscale.pgm]]
+
+test decode-1.3 {Complete file decode} -body {
+    ::ptjd::decode [read-test-file ycbcr-h.jpg] ::ptjd::scale-double
+} -result [::ptjd::ppm-to-image [read-test-file ycbcr-h.ppm]]
+
+test decode-1.4 {Complete file decode} -body {
+    ::ptjd::decode [read-test-file ycbcr-v.jpg] ::ptjd::scale-double
+} -result [::ptjd::ppm-to-image [read-test-file ycbcr-v.ppm]]
+
+test decode-1.5 {Complete file decode} -body {
+    ::ptjd::decode [read-test-file ycbcr-q.jpg] ::ptjd::scale-double
+} -result } -result [::ptjd::ppm-to-image [read-test-file ycbcr-q.ppm]]
+
+test decode-2.1 {Decode an image with nontrivial AC coefficients} -body {
+    ::ptjd::decode [read-test-file ycbcr-ac.jpg]
+} -result [::ptjd::ppm-to-image [read-test-file ycbcr-ac.ppm]]
 
 test read-frame-header-1.1 {Frame header} -body {
     sort-frame [::ptjd::read-frame-header [decode-hex {
@@ -498,7 +611,7 @@ test read-frame-header-1.1 {Frame header} -body {
         p 8
         x 525
         y 356
-    }} 1]
+    }} 2]
 
 test read-frame-header-1.2 {Frame header} -body {
     sort-frame [::ptjd::read-frame-header [decode-hex {
@@ -512,7 +625,7 @@ test read-frame-header-1.2 {Frame header} -body {
         p 8
         x 849
         y 1225
-    }} 1]
+    }} 2]
 
 test read-scan-header-1.3 {Scan header} -body {
     sort-frame [::ptjd::read-scan-header [decode-hex {
@@ -527,23 +640,20 @@ test read-scan-header-1.3 {Scan header} -body {
         ns 3
         se 63
         ss 0
-    }} 1]
+    }} 2]
 
-test get-bit-1.1 {Bit stream} -setup {
+test get-bits-1.1 {Bit stream} -body {
     set bits {}
     set ptr 0
-    set result {}
-} -body {
     for {set i 0} {$i < 24} {incr i} {
-        lassign [::ptjd::get-bit \x11\xF0\xA5 $ptr $bits] ptr bits bit
+        lassign [::ptjd::get-bits \x11\xF0\xA5 $ptr $bits 1] ptr bits bit
         lappend result $bit
     }
     return $result
-} -cleanup {
-    unset bit bits i ptr result
 } -result {0 0 0 1 0 0 0 1 1 1 1 1 0 0 0 0 1 0 1 0 0 1 0 1}
 
-puts [format "%s:   Total %2u   Passed %2u   Failed %2u   Skipped %2u" \
+puts $::debugChan \
+     [format "%s:   Total %2u   Passed %2u   Failed %2u   Skipped %2u" \
              $argv0 $::numTests(Total) $::numTests(Passed) \
              $::numTests(Failed) $::numTests(Skipped)]
 
