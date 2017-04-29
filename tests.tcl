@@ -22,11 +22,12 @@ set debugChan stdout ;# The channel to which we'll print errors.
 # A basic tcltest-like test command compatible with both Tcl 8.5+ and Jim Tcl.
 proc test {name descr args} {
     incr ::numTests(Total)
+    array set testOpts $args
     set failed 0
     set details {}
 
-    if {[dict exists $args -constraints]} {
-        foreach constr [dict get $args -constraints] {
+    if {[info exists testOpts(-constraints)]} {
+        foreach constr $testOpts(-constraints) {
             if {![info exists ::testConstraints($constr)]
                     || !$::testConstraints($constr)} {
                 incr ::numTests(Skipped)
@@ -38,26 +39,26 @@ proc test {name descr args} {
     # A dummy [for] to use [break] to go to the end of the block on error. This
     # idiom was described by Lars H on https://tcl.wiki/901.
     for {} 1 break {
-        if {[dict exists $args -setup]
-                && [catch [dict get $args -setup] catchRes opts]} {
+        if {[info exists testOpts(-setup)]
+                && [catch $testOpts(-setup) catchRes catchOpts]} {
             set failed 1
             set details {during setup}
             break
         }
 
-        catch [dict get $args -body] catchRes opts
+        catch $testOpts(-body) catchRes catchOpts
         # Store the result of the body of the test for later.
         set actual $catchRes
-        set expected [dict get $args -result]
+        set expected $testOpts(-result)
 
-        if {[dict get $opts -code] != 0} {
+        if {[dict get $catchOpts -code] != 0} {
             set failed 1
             set details {during run}
             break
         }
 
-        if {[dict exists $args -cleanup]
-                && [catch [dict get $args -cleanup] catchRes opts]} {
+        if {[info exists testOpts(-cleanup)]
+                && [catch $testOpts(-cleanup) catchRes catchOpts]} {
             set failed 1
             set details {during cleanup}
             break
@@ -72,19 +73,20 @@ proc test {name descr args} {
     if {$failed} {
         incr ::numTests(Failed)
         puts $::debugChan "==== $name $descr [concat FAILED $details]"
-        puts $::debugChan "==== Contents of test case:\n[dict get $args -body]"
-        puts $::debugChan "---- errorCode: [dict get $opts -code]"
-        if {[dict get $opts -code] != 0} {
+        puts $::debugChan "==== Contents of test case:\n$testOpts(-body)"
+        puts $::debugChan "---- errorCode: [dict get $catchOpts -code]"
+        if {[dict get $catchOpts -code] != 0} {
             # The test returned an error code.
             puts $::debugChan "---- Result:    $catchRes"
             # Prettify a Jim Tcl stack trace.
             if {$::testConstraints(jim)} {
                 puts $::debugChan "---- errorInfo:"
-                foreach {proc file line} [dict get $opts -errorinfo] {
+                foreach {proc file line} [dict get $catchOpts -errorinfo] {
                     puts $::debugChan "in \[$proc\] on line $line of $file"
                 }
             } else {
-                puts $::debugChan "---- errorInfo: [dict get $opts -errorinfo]"
+                puts $::debugChan "---- errorInfo:
+                                   [dict get $catchOpts -errorinfo]"
             }
         } else {
             # The test returned a wrong result.
@@ -117,7 +119,13 @@ proc test {name descr args} {
 
 # Decoded binary data encoded as a list of hex values.
 proc decode-hex data {
-    if {$::testConstraints(jim)} {
+    set canDecodeHex [expr {![catch {binary decode hex FF}]}]
+    set canPack [expr {![catch {pack _ 0xFF -intle 8}]}]
+    if {$canDecodeHex} {
+        # Tcl 8.6
+        return [binary decode hex $data]
+    } elseif {$canPack} {
+        # Jim Tcl
         set result {}
         foreach x $data {
             pack v [expr 0x$x] -intle 8
@@ -125,7 +133,12 @@ proc decode-hex data {
         }
         return $result
     } else {
-        return [binary decode hex $data]
+        # Tcl 8.5
+        set result {}
+        foreach x $data {
+            append result [binary format c 0x$x]
+        }
+        return $result
     }
 }
 
