@@ -23,8 +23,8 @@ set debugChan stdout ;# The channel to which we'll print errors.
 proc test {name descr args} {
     incr ::numTests(Total)
     array set testOpts $args
-    set failed 0
-    set details {}
+    set testState(failed) 0
+    set testState(details) {}
 
     if {[info exists testOpts(-constraints)]} {
         foreach constr $testOpts(-constraints) {
@@ -40,53 +40,60 @@ proc test {name descr args} {
     # idiom was described by Lars H on https://tcl.wiki/901.
     for {} 1 break {
         if {[info exists testOpts(-setup)]
-                && [catch $testOpts(-setup) catchRes catchOpts]} {
-            set failed 1
-            set details {during setup}
+                && [catch $testOpts(-setup) \
+                          testState(catchRes) \
+                          testState(catchOpts)]} {
+            set testState(failed) 1
+            set testState(details) {during setup}
             break
         }
 
-        catch $testOpts(-body) catchRes catchOpts
+        catch $testOpts(-body) testState(catchRes) testState(catchOpts)
         # Store the result of the body of the test for later.
-        set actual $catchRes
-        set expected $testOpts(-result)
+        set testState(actual)   $testState(catchRes)
+        set testState(expected) $testOpts(-result)
 
-        if {[dict get $catchOpts -code] != 0} {
-            set failed 1
-            set details {during run}
+        if {[dict get $testState(catchOpts) -code] != 0} {
+            set testState(failed) 1
+            set testState(details) {during run}
             break
         }
 
         if {[info exists testOpts(-cleanup)]
-                && [catch $testOpts(-cleanup) catchRes catchOpts]} {
-            set failed 1
-            set details {during cleanup}
+                && [catch $testOpts(-cleanup) \
+                          testState(catchRes) \
+                          testState(catchOpts)]} {
+            set testState(failed) 1
+            set testState(details) {during cleanup}
             break
         }
 
-        if {$actual ne $expected} {
-            set failed 1
-            set details {with wrong result}
+        if {$testState(actual) ne $testState(expected)} {
+            set testState(failed) 1
+            set testState(details) {with wrong result}
         }
     }
 
-    if {$failed} {
+    if {$testState(failed)} {
         incr ::numTests(Failed)
-        puts $::debugChan "==== $name $descr [concat FAILED $details]"
+        puts $::debugChan "==== $name $descr\
+                           [concat FAILED $testState(details)]"
         puts $::debugChan "==== Contents of test case:\n$testOpts(-body)"
-        puts $::debugChan "---- errorCode: [dict get $catchOpts -code]"
-        if {[dict get $catchOpts -code] != 0} {
+        puts $::debugChan "---- errorCode:\
+                           [dict get $testState(catchOpts) -code]"
+        if {[dict get $testState(catchOpts) -code] != 0} {
             # The test returned an error code.
-            puts $::debugChan "---- Result:    $catchRes"
+            puts $::debugChan "---- Result:    $testState(catchRes)"
             # Prettify a Jim Tcl stack trace.
             if {$::testConstraints(jim)} {
                 puts $::debugChan "---- errorInfo:"
-                foreach {proc file line} [dict get $catchOpts -errorinfo] {
+                foreach {proc file line} [dict get $testState(catchOpts) \
+                                                   -errorinfo] {
                     puts $::debugChan "in \[$proc\] on line $line of $file"
                 }
             } else {
                 puts $::debugChan "---- errorInfo:
-                                   [dict get $catchOpts -errorinfo]"
+                                   [dict get $testState(catchOpts) -errorinfo]"
             }
         } else {
             # The test returned a wrong result.
@@ -100,18 +107,22 @@ proc test {name descr args} {
                 set color(red)    {}
             }
             # Find the first differing character.
-            for {set i 0} {$i < [string length $expected]} {incr i} {
-                if {[string index $actual $i] ne [string index $expected $i]} {
+            for {set i 0} {$i < [string length $testState(expected)]} {incr i} {
+                if {[string index $testState(actual) $i] ne
+                        [string index $testState(expected) $i]} {
                     break
                 }
             }
-            set highlighted    $color(green)[string range $actual 0 $i-1]
-            append highlighted $color(red)[string range $actual $i end]
+            set highlighted    $color(green)
+            append highlighted [string range $testState(actual) 0 $i-1]
+            append highlighted $color(red)
+            append highlighted [string range $testState(actual) $i end]
             append highlighted $color(normal)
-            puts $::debugChan "---- Expected result: $expected"
+            puts $::debugChan "---- Expected result: $testState(expected)"
             puts $::debugChan "---- Actual result:   $highlighted"
         }
-        puts $::debugChan "==== $name $descr [concat FAILED $details]\n"
+        puts $::debugChan "==== $name $descr\
+                           [concat FAILED $testState(details)]\n"
     } else {
         incr ::numTests(Passed)
     }
