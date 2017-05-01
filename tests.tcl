@@ -217,14 +217,14 @@ proc flatten {list {n 1}} {
     return $result
 }
 
-test decode-hex-1.1 {Decoding hex-encoded binary data} -body {
+test decode-hex-1.1 {Decode hex-encoded binary data} -body {
     binary scan [decode-hex {
         FF DA 00 0C 03 01 00 02 11 03 11 00 3F 00
     }] H28 scanned
     return $scanned
 } -result ffda000c03010002110311003f00
 
-test int-to-binary-digits-1.1 {Convert an integer to its binary
+test int-to-binary-digits-1.1 {Convert an integer to its binary\
                                representation} -body {
     list [::ptjd::int-to-binary-digits   34   ] \
          [::ptjd::int-to-binary-digits   34  1] \
@@ -270,7 +270,7 @@ test read-tables-1.1 {QT} -body {
         40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
         40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40
         FF D9
-    }] 0 {} {} {}]
+    }] 0 {} {} {} {}]
     lset x 1 0 [::ptjd::unzigzag [lindex $x 1 0]]
     lset x 1 1 [::ptjd::unzigzag [lindex $x 1 1]]
     return $x
@@ -299,7 +299,7 @@ test read-tables-1.1 {QT} -body {
             64 64 64 64 64 64 64 64
             64 64 64 64 64 64 64 64
         } {} {}
-    } {{} {} {} {}} {{} {} {} {}}} 3]
+    } {{} {} {} {}} {{} {} {} {}} {}} 3]
 
 
 test tables-1.2 {QT} -body {
@@ -311,7 +311,7 @@ test tables-1.2 {QT} -body {
         0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
         0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A 0A
         FF D9
-    }] 0 {} {} {}]
+    }] 0 {} {} {} {}]
     lset x 1 0 [::ptjd::unzigzag [lindex $x 1 0]]
     lset x 1 1 [::ptjd::unzigzag [lindex $x 1 1]]
     return $x
@@ -341,7 +341,7 @@ test tables-1.2 {QT} -body {
             10  10  10  10  10  10  10  10 
         } {} {}
     }
-    {{} {} {} {}} {{} {} {} {}}} 3]
+    {{} {} {} {}} {{} {} {} {}} {}} 3]
 
 test huffman-1.1 {Huffman codes} -body {
     format-codes [::ptjd::generate-huffman-codes {
@@ -481,7 +481,7 @@ test inverse-dct-1.1 {Inverse DCT} -body {
     -47  -34  -53  -74  -60  -47  -47  -41
 }]
 
-test combine-and-crop-1.1 {Combining blocks into a plane} -body {
+test combine-and-crop-1.1 {Combine blocks into a plane} -body {
     ::ptjd::crop 3 23 18 [::ptjd::combine-blocks 3 3 1 1 [list \
         [lrepeat 64 0] [lrepeat 64 1] [lrepeat 64 2] \
         [lrepeat 64 3] [lrepeat 64 4] [lrepeat 64 5] \
@@ -623,6 +623,10 @@ test decode-2.1 {Decode an image with nontrivial AC coefficients} -body {
     ::ptjd::decode [read-test-file ycbcr-ac.jpg]
 } -result [::ptjd::ppm-to-image [read-test-file ycbcr-ac.ppm]]
 
+test decode-3.1 {Decode a file with restart markers} -body {
+    ::ptjd::decode [read-test-file restart.jpg]
+} -result [::ptjd::ppm-to-image [read-test-file restart.ppm]]
+
 test read-frame-header-1.1 {Frame header} -body {
     sort-frame [::ptjd::read-frame-header [decode-hex {
         FF C0 00 11 08 01 64 02 0D 03 01 11 00 02 11 01 03 11 01
@@ -674,7 +678,29 @@ test get-bits-1.1 {Bit stream} -body {
         lappend result $bit
     }
     return $result
-} -result {0 0 0 1 0 0 0 1 1 1 1 1 0 0 0 0 1 0 1 0 0 1 0 1}
+} -result [sws {0 0 0 1 0 0 0 1   1 1 1 1 0 0 0 0   1 0 1 0 0 1 0 1}]
+
+test get-bits-2.1 {Bit stream with a restart marker} -body {
+    set bits {}
+    set ptr 0
+    for {set i 0} {$i < 24} {incr i} {
+        lassign [::ptjd::get-bits \x11\xFF\xD0\xF0\xFF\xD1\xA5 $ptr $bits 1] \
+                ptr bits bit
+        lappend result $bit
+    }
+    return $result
+} -result [sws {0 0 0 1 0 0 0 1   1 1 1 1 0 0 0 0   1 0 1 0 0 1 0 1}]
+
+test get-bits-2.2 {Bit stream with a restart marker} -body {
+    set bits {}
+    set ptr 0
+    for {set i 0} {$i < 16} {incr i} {
+        lassign [::ptjd::get-bits \xFF\xD0\xFF\x00\xFF\x00 $ptr $bits 1] \
+                ptr bits bit
+        lappend result $bit
+    }
+    return $result
+} -result [sws {1 1 1 1 1 1 1 1   1 1 1 1 1 1 1 1}]
 
 puts $::debugChan \
      [format "%s:   Total %2u   Passed %2u   Failed %2u   Skipped %2u" \

@@ -94,10 +94,11 @@ proc ::ptjd::hi-lo byte {
     return [list [expr {$byte >> 4}] [expr {$byte & 0x0F}]]
 }
 
-# Read quantization tables, Huffman tables and APP sections from $data starting
-# at $ptr until $until is encountered. Return a list containing the new values
-# for $ptr, $qts, $huffdc and $huffac.
-proc ::ptjd::read-tables {until data ptr qts huffdc huffac} {
+# Read quantization tables, Huffman tables, restart interval definitions, APP
+# sections and comments from $data starting at $ptr until $until is encountered.
+# Return a list containing the new values for $ptr, $qts, $huffdc, $huffac and
+# $ri.
+proc ::ptjd::read-tables {until data ptr qts huffdc huffac ri} {
     while {[llength $qts] < 4} {
         lappend qts {}
     }
@@ -151,22 +152,30 @@ proc ::ptjd::read-tables {until data ptr qts huffdc huffac} {
                     }
                 }
             }
+            \xFF\xDD {
+                # Define Restart Interval.
+                incr ptr 2
+                scan-at-ptr {Su Su} lr ri
+                assert-equal $lr 4
+                incr ptr 4
+            }
             default {
                 if {$marker eq $until} {
                     break
-                } elseif {("\xFF\xE0" <= $marker) && ($marker <= "\xFF\xEF")} {
-                    # Skip APP0-APPF sections. APP0 is the JFIF header, APP1 is
-                    # the EXIF header, APPE is Adobe info.
+                } elseif {(("\xFF\xE0" <= $marker) && ($marker <= "\xFF\xEF"))
+                          || ($marker eq "\xFF\xFE")} {
+                    # Skip APP0-APPF sections and comments. APP0 is the JFIF
+                    # header, APP1 is the EXIF header, APPE is Adobe info.
                     incr ptr [expr {$length + 2}]
                 } else {
-                    error "unsupported section \"[binary encode hex $marker]\"\
+                    error "unsupported section \"[escape-unprintable $marker]\"\
                            at 0x[format %x $ptr]"                    
                 }
             }
         }
     }
 
-    return [list $ptr $qts $huffdc $huffac]
+    return [list $ptr $qts $huffdc $huffac $ri]
 }
 
 proc ::ptjd::read-frame-header {data ptr} {
@@ -218,6 +227,18 @@ proc ::ptjd::get-bits {data ptr bits n} {
             switch -exact -- $second {
                 00 {
                     # The value \xFF was escaped as \xFF\x00.
+                }
+                d0 -
+                d1 -
+                d2 -
+                d3 -
+                d4 -
+                d5 -
+                d6 -
+                d7 {
+                    # Skip the restart marker.
+                    incr ptr
+                    continue
                 }
                 d9 {
                     incr ptr -1
@@ -273,7 +294,7 @@ proc ::ptjd::restore-signed x {
     }
 }
 
-# Read one MCU block.
+# Read one block.
 proc ::ptjd::read-block {data ptr bits dct act {compN ""}} {
     # The DC component.
     set value {}
@@ -323,6 +344,7 @@ proc ::ptjd::read-block {data ptr bits dct act {compN ""}} {
 
 proc ::ptjd::dequantize-block {block qt} {
     set result {}
+    assert-equal [llength $block] [llength $qt]
     foreach x $block y $qt {
         lappend result [expr {$x * $y}]
     }
@@ -525,13 +547,14 @@ proc ::ptjd::decode {data {scaler ::ptjd::scale-double}} {
     assert-equal $soi \xFF\xD8
     incr ptr 2
 
-    set qts {}
-    set huffdc {}
-    set huffac {}
+    set qts {}    ;# Quantization tables.
+    set huffdc {} ;# Huffman DC tables.
+    set huffac {} ;# Huffman AC tables.
+    set ri {}     ;# Restart interval.
 
     # Parse tables until a Start of Frame marker is encountered.
-    lassign [read-tables \xFF\xC0 $data $ptr $qts $huffdc $huffac] \
-            ptr qts huffdc huffac
+    lassign [read-tables \xFF\xC0 $data $ptr $qts $huffdc $huffac $ri] \
+            ptr qts huffdc huffac ri
 
     lassign [read-frame-header $data $ptr] ptr frame
     if {[dict get $frame nf] ni {1 3}} {
@@ -541,9 +564,8 @@ proc ::ptjd::decode {data {scaler ::ptjd::scale-double}} {
     # The scan loop.
 
     # Parse tables until a Start of Scan marker is encountered.
-    lassign [read-tables \xFF\xDA $data $ptr $qts $huffdc $huffac] \
-            ptr qts huffdc huffac
-
+    lassign [read-tables \xFF\xDA $data $ptr $qts $huffdc $huffac $ri] \
+            ptr qts huffdc huffac ri
     # Start of Scan.
     lassign [read-scan-header $data $ptr] ptr scan
 
@@ -559,7 +581,9 @@ proc ::ptjd::decode {data {scaler ::ptjd::scale-double}} {
         incr i
     }
     unset component repeats
+    set rc 0 ;# Restart count.
     while 1 {
+        # Read an MCU.
         foreach i $scanOrder {
             # Read a block.
             set scanComp [lindex [dict get $scan components] $i]
@@ -590,6 +614,16 @@ proc ::ptjd::decode {data {scaler ::ptjd::scale-double}} {
             set blockSpatDom [inverse-dct $blockReord]
             unset blockReord
             lappend planeBlocks($cs) $blockSpatDom
+
+        }
+
+        incr rc
+        if {($ri ne {}) && ($rc == $ri)} {
+            for {set j 1} {$j <= [dict get $frame nf]} {incr j} {
+                set prevDc($j) 0
+            }
+            set bits {}
+            set rc 0
         }
         # End of Image.
         scan-at-ptr a2 eoi
