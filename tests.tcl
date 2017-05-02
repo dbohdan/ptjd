@@ -8,14 +8,15 @@ set numTests(Passed)   0
 set numTests(Failed)   0
 set numTests(Skipped)  0
 
-set testConstraints(jim) [expr {
-    ([info exists ::tcl_platform(engine)] && ($::tcl_platform(engine) eq "Jim"))
-    || [string match *jim* [info nameofexecutable]]
-}]
-set testConstraints(tcl) [expr {
-    ([info exists ::tcl_platform(engine)] && ($::tcl_platform(engine) eq "Tcl"))
-    || [string match 8.* [info patchlevel]]
-}]
+if {[info exists ::tcl_platform(engine)]} {
+    set testConstraints(jim) [expr {$tcl_platform(engine) eq "Jim"}]
+    set testConstraints(tcl) [expr {$tcl_platform(engine) eq "Tcl"}]
+} else {
+    set testConstraints(jim) [expr {![catch {
+        proc foo {} {{bar 0}} {}; info statics foo; rename foo {}
+    }]}]
+    set testConstraints(tcl) [string match 8.*  [info patchlevel]]
+}
 
 set debugChan stdout ;# The channel to which we'll print errors.
 
