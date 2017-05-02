@@ -241,8 +241,7 @@ proc ::ptjd::get-bits {data ptr bits n} {
                     continue
                 }
                 d9 {
-                    incr ptr -1
-                    return [list $ptr {} EOI]
+                    error {encountered EOI}
                 }
                 default {
                     error "can't understand marker 0xff$second\
@@ -267,11 +266,7 @@ proc ::ptjd::read-code {data ptr bits table {ct ""}} {
         } else {
             set bits [lassign $bits bit]
         }
-        if {$bit eq "EOI"} {
-            return [list $ptr $bits EOI]
-        } else {
-            append code $bit
-        }
+        append code $bit
         if {[string length $code] > 16} {
             error "can't decode the [concat $ct code] \"$code\"\
                    at 0x[format %x $ptr] ($table)"
@@ -299,9 +294,6 @@ proc ::ptjd::read-block {data ptr bits dct act {compN ""}} {
     # The DC component.
     set value {}
     lassign [read-code $data $ptr $bits $dct [concat $compN DC]] ptr bits value
-    if {$value eq "EOI"} {
-        return [list $ptr $bits {}]
-    }
 
     set dc 0
     if {$value > 0} {
@@ -314,9 +306,7 @@ proc ::ptjd::read-block {data ptr bits dct act {compN ""}} {
     while {[llength $ac] < 63} {
         lassign [read-code $data $ptr $bits $act [concat $compN AC]] \
                 ptr bits rs
-        if {$rs eq "EOI"} {
-            break
-        } elseif {$rs == 0x00} {
+        if {$rs == 0x00} {
             # End of Block.
             break
         } elseif {$rs == 0xF0} {
