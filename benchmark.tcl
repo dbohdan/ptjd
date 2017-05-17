@@ -27,9 +27,26 @@ proc engine {} {
     }
 }
 
+proc caption {} {
+    set result {}
+    append result "Running in [engine] [info patchlevel] "
+    append result "([expr {8 * $::tcl_platform(pointerSize)}]-bit) on "
+    if {[info exists ::tcl_platform(machine)]} {
+        append result "$::tcl_platform(machine) "
+    } elseif {$::tcl_platform(platform) eq "unix"} {
+        append result "[exec uname -m] "
+    }
+    append result $::tcl_platform(os)
+    return $result
+}
+
+proc memory-usage {} {
+    return [lindex [exec ps p [pid] -o rss] end]
+}
+
 proc main {} {
     set files [list grayscale.jpg landscape.jpg landscape-q.jpg]
-    puts $::debugChan "Running on [engine] [info patchlevel]"
+    puts $::debugChan [caption]
     puts $::debugChan "$::iterations iterations per image"
     puts $::debugChan ==========================
     foreach filename $files {
@@ -37,7 +54,10 @@ proc main {} {
         lassign [time {::ptjd::decode $image} $::iterations] microseconds
         puts $::debugChan [format {%-16s %6i ms} \
                                   $filename \
-                                  [expr {round($microseconds/1000)}]]
+                                  [expr {round($microseconds / 1000)}]]
+    }
+    catch {
+        puts $::debugChan [format {%.1f MB} [expr {[memory-usage] / 1024.0}]]
     }
 }
 
