@@ -18,6 +18,7 @@ namespace eval ::ptjd {
     unset alpha pi u x
 }
 
+# Escape the unprintable binary data in $s for printing in error messages.
 proc ::ptjd::escape-unprintable s {
     set result {}
     foreach c [split $s {}] {
@@ -31,6 +32,7 @@ proc ::ptjd::escape-unprintable s {
     return $result
 }
 
+# Throw an error if $actual does not equal $expected.
 proc ::ptjd::assert-equal {actual expected} {
     if {$actual ne $expected} {
         error "expected \"[escape-unprintable $expected]\",\
@@ -52,6 +54,8 @@ proc ::ptjd::int-to-binary-digits {x {width 0}} {
     return $bin
 }
 
+# Take a table of values and return a dictionary mapping a Huffman code to each
+# of these values. The Huffman codes are represented as binary digits.
 proc ::ptjd::generate-huffman-codes table {
     set prefixes {}
     set codes {}
@@ -78,8 +82,8 @@ proc ::ptjd::generate-huffman-codes table {
 }
 
 # [binary scan] the data in the variable $data (in the caller's scope) starting
-# at the offset $ptr (ditto) and store the results in the variables (ditto) the
-# variables listed in $args.
+# at the offset $ptr (in the same scope) and store the results in the variables
+# (ditto) listed in $args.
 proc ::ptjd::scan-at-ptr {format args} {
     upvar 1 data data ptr ptr
     foreach varName $args {
