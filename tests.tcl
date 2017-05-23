@@ -628,6 +628,49 @@ test decode-3.1 {Decode a file with restart markers} -body {
     ::ptjd::decode [read-test-file restart.jpg]
 } -result [::ptjd::ppm-to-image [read-test-file restart.ppm]]
 
+test decode-4.1 {Attempt to decode an empty file} -body {
+    catch {::ptjd::decode {}} err
+    return $err
+} -result {failed to scan "a2" at 0x0}
+
+test decode-5.1 {Attempt to decode a truncated file} -body {
+    catch {::ptjd::decode [string range [read-test-file restart.jpg] 0 100]} err
+    return $err
+} -result {failed to scan "a2 Su" at 0x9e}
+
+test decode-5.2 {Attempt to decode a truncated file} -body {
+    catch {::ptjd::decode [string range [read-test-file restart.jpg] 0 300]} err
+    return $err
+} -result {failed to scan "cu125" at 0x10c}
+
+test decode-5.3 {Attempt to decode a truncated file} -body {
+    catch {::ptjd::decode [string range [read-test-file restart.jpg] 0 700]} err
+    return [string range $err 0 end-2]
+} -result {failed to scan "B8" at 0x2}
+
+test decode-6.1 {Attempt to decode a file with a missing beginning} -body {
+    catch {::ptjd::decode [string range [read-test-file restart.jpg] 2 end]} err
+    return $err
+} -result {expected "\xFF\xD8", but got "\xFF\xE0"}
+
+test decode-7.1 {Attempt to decode a file with a missing middle} -body {
+    set x [read-test-file restart.jpg]
+    catch {::ptjd::decode [string range $x 0 100][string range $x 200 end]} err
+    return $err
+} -result {unsupported section "\xB1\xC1" at 0x9e}
+
+test decode-7.2 {Attempt to decode a file with a missing middle} -body {
+    set x [read-test-file restart.jpg]
+    catch {::ptjd::decode [string range $x 0 200][string range $x 205 end]} err
+    return $err
+} -result {unsupported section "\x10\x0" at 0xd2}
+
+test decode-8.1 {Attempt to decode a corrupted file} -body {
+    set x [string map {WkY WAA} [read-test-file restart.jpg]]
+    catch {::ptjd::decode $x} err
+    return $err
+} -result {expected "64", but got "65"}
+
 test read-frame-header-1.1 {Frame header} -body {
     sort-frame [::ptjd::read-frame-header [decode-hex {
         FF C0 00 11 08 01 64 02 0D 03 01 11 00 02 11 01 03 11 01

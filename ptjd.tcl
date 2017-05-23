@@ -2,7 +2,7 @@
 # Copyright (c) 2017 dbohdan and contributors listed in AUTHORS
 # License: MIT.
 namespace eval ::ptjd {
-    variable version 0.1.0
+    variable version 0.1.1
     variable inverseDctMatrix {}
 
     # Precompute the inverse DCT matrix.
@@ -89,7 +89,9 @@ proc ::ptjd::scan-at-ptr {format args} {
     foreach varName $args {
         upvar 1 $varName $varName
     }
-    binary scan $data [concat @$ptr $format] {*}$args
+    if {![binary scan $data [concat @$ptr $format] {*}$args]} {
+        error "failed to scan \"$format\" at 0x[format %x $ptr]"
+    }
 }
 
 # Return a list containing the high and the low nibble (4-bit value) of a byte.
