@@ -43,7 +43,8 @@ proc ::ptjd::assert-equal {actual expected} {
 # Convert an integer to a string of binary digits. A [format %0${width}b $x]
 # substitute for Tcl 8.5.
 proc ::ptjd::int-to-binary-digits {x {width 0}} {
-    # The credit for the trick used here goes to RS (https://tcl.wiki/15598).
+    # The credit for the trick used here goes to RS
+    # (https://wiki.tcl-lang.org/15598).
     set bin [string trimleft [string map {
         0 0000 1 0001 2 0010 3 0011 4 0100 5 0101 6 0110 7 0111
         8 1000 9 1001 a 1010 b 1011 c 1100 d 1101 e 1110 f 1111

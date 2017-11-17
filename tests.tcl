@@ -38,7 +38,7 @@ proc test {name descr args} {
     }
 
     # A dummy [for] to use [break] to go to the end of the block on error. This
-    # idiom was described by Lars H on https://tcl.wiki/901.
+    # idiom was described by Lars H on https://wiki.tcl-lang.org/901.
     for {} 1 break {
         if {[info exists testOpts(-setup)]
                 && [catch $testOpts(-setup) \
