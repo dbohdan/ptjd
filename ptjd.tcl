@@ -18,6 +18,23 @@ namespace eval ::ptjd {
     unset alpha pi u x
 }
 
+# Use [string bytelength] on binary data in Jim Tcl.
+if {[catch {
+    proc ::ptjd::foo {} {}
+    info statics ::ptjd::foo
+    rename ::ptjd::foo {}
+}]} {
+    # Tcl 8.5-9.0 doesn't have [info statics].
+    proc ::ptjd::bytelength s {
+        return [string length $s]
+    }
+} else {
+    # We are in Jim Tcl.
+    proc ::ptjd::bytelength s {
+        return [string bytelength $s]
+    }
+}
+
 # Escape the unprintable binary data in $s for printing in error messages.
 proc ::ptjd::escape-unprintable s {
     set result {}
@@ -49,8 +66,8 @@ proc ::ptjd::int-to-binary-digits {x {width 0}} {
         0 0000 1 0001 2 0010 3 0011 4 0100 5 0101 6 0110 7 0111
         8 1000 9 1001 a 1010 b 1011 c 1100 d 1101 e 1110 f 1111
     } [format %x $x]] 0]
-    if {($width) > 0 && ([string length $bin] < $width)} {
-        set bin [string repeat 0 [expr {$width - [string length $bin]}]]$bin
+    if {($width) > 0 && ([bytelength $bin] < $width)} {
+        set bin [string repeat 0 [expr {$width - [bytelength $bin]}]]$bin
     }
     return $bin
 }
@@ -274,7 +291,7 @@ proc ::ptjd::read-code {data ptr bits table {ct ""}} {
             set bits [lassign $bits bit]
         }
         append code $bit
-        if {[string length $code] > 16} {
+        if {[bytelength $code] > 16} {
             error "can't decode the [concat $ct code] \"$code\"\
                    at 0x[format %x $ptr] ($table)"
         }
@@ -537,7 +554,7 @@ proc ::ptjd::ycbcr-to-rgb {y cb cr} {
 
 proc ::ptjd::decode {data {scaler ::ptjd::scale-double}} {
     set ptr 0
-    set length [string length $data]
+    set length [bytelength $data]
 
     # Start of Image.
     scan-at-ptr a2 soi
