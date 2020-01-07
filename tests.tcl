@@ -109,8 +109,8 @@ proc test {name descr args} {
             }
             # Find the first differing character.
             for {set i 0} {$i < [string length $testState(expected)]} {incr i} {
-                if {[string index $testState(actual) $i] ne
-                        [string index $testState(expected) $i]} {
+                if {[byterange $testState(actual) $i $i] ne
+                        [byterange $testState(expected) $i $i]} {
                     break
                 }
             }
@@ -216,6 +216,16 @@ proc flatten {list {n 1}} {
         lappend result {*}[flatten $x [expr {$n - 1}]]
     }
     return $result
+}
+
+if {$testConstraints(jim)} {
+    proc byterange {s start end} {
+        return [string byterange $s $start $end]
+    }
+} else {
+    proc byterange {s start end} {
+        return [string range $s $start $end]
+    }
 }
 
 test decode-hex-1.1 {Decode hex-encoded binary data} -body {
@@ -634,34 +644,34 @@ test decode-4.1 {Attempt to decode an empty file} -body {
 } -result {failed to scan "a2" at 0x0}
 
 test decode-5.1 {Attempt to decode a truncated file} -body {
-    catch {::ptjd::decode [string range [read-test-file restart.jpg] 0 100]} err
+    catch {::ptjd::decode [byterange [read-test-file restart.jpg] 0 100]} err
     return $err
 } -result {failed to scan "a2 Su" at 0x9e}
 
 test decode-5.2 {Attempt to decode a truncated file} -body {
-    catch {::ptjd::decode [string range [read-test-file restart.jpg] 0 300]} err
+    catch {::ptjd::decode [byterange [read-test-file restart.jpg] 0 300]} err
     return $err
 } -result {failed to scan "cu125" at 0x10c}
 
 test decode-5.3 {Attempt to decode a truncated file} -body {
-    catch {::ptjd::decode [string range [read-test-file restart.jpg] 0 700]} err
-    return [string range $err 0 end-2]
+    catch {::ptjd::decode [byterange [read-test-file restart.jpg] 0 700]} err
+    return [byterange $err 0 end-2]
 } -result {failed to scan "B8" at 0x2}
 
 test decode-6.1 {Attempt to decode a file with a missing beginning} -body {
-    catch {::ptjd::decode [string range [read-test-file restart.jpg] 2 end]} err
+    catch {::ptjd::decode [byterange [read-test-file restart.jpg] 2 end]} err
     return $err
 } -result {expected "\xFF\xD8", but got "\xFF\xE0"}
 
 test decode-7.1 {Attempt to decode a file with a missing middle} -body {
     set x [read-test-file restart.jpg]
-    catch {::ptjd::decode [string range $x 0 100][string range $x 200 end]} err
+    catch {::ptjd::decode [byterange $x 0 100][byterange $x 200 end]} err
     return $err
 } -result {unsupported section "\xB1\xC1" at 0x9e}
 
 test decode-7.2 {Attempt to decode a file with a missing middle} -body {
     set x [read-test-file restart.jpg]
-    catch {::ptjd::decode [string range $x 0 200][string range $x 205 end]} err
+    catch {::ptjd::decode [byterange $x 0 200][byterange $x 205 end]} err
     return $err
 } -result {unsupported section "\x10\x0" at 0xd2}
 
