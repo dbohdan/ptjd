@@ -20,6 +20,16 @@ if {[info exists ::tcl_platform(engine)]} {
 
 set debugChan stdout ;# The channel to which we'll print errors.
 
+if {$testConstraints(jim)} {
+    proc byterange {s start end} {
+        return [string byterange $s $start $end]
+    }
+} else {
+    proc byterange {s start end} {
+        return [string range $s $start $end]
+    }
+}
+
 # A basic tcltest-like test command compatible with both Tcl 8.5+ and Jim Tcl.
 proc test {name descr args} {
     incr ::numTests(Total)
@@ -216,16 +226,6 @@ proc flatten {list {n 1}} {
         lappend result {*}[flatten $x [expr {$n - 1}]]
     }
     return $result
-}
-
-if {$testConstraints(jim)} {
-    proc byterange {s start end} {
-        return [string byterange $s $start $end]
-    }
-} else {
-    proc byterange {s start end} {
-        return [string range $s $start $end]
-    }
 }
 
 test decode-hex-1.1 {Decode hex-encoded binary data} -body {
