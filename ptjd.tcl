@@ -2,7 +2,7 @@
 # Copyright (c) 2017, 2020 dbohdan and contributors listed in AUTHORS
 # License: MIT.
 namespace eval ::ptjd {
-    variable version 0.1.1
+    variable version 0.1.2
     variable inverseDctMatrix {}
 
     # Precompute the inverse DCT matrix.
