@@ -628,7 +628,7 @@ test decode-1.4 {Complete file decode} -body {
 
 test decode-1.5 {Complete file decode} -body {
     ::ptjd::decode [read-test-file ycbcr-q.jpg] ::ptjd::scale-double
-} -result } -result [::ptjd::ppm-to-image [read-test-file ycbcr-q.ppm]]
+} -result [::ptjd::ppm-to-image [read-test-file ycbcr-q.ppm]]
 
 test decode-2.1 {Decode an image with nontrivial AC coefficients} -body {
     ::ptjd::decode [read-test-file ycbcr-ac.jpg]
