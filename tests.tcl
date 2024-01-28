@@ -1,7 +1,7 @@
 # PTJD, a pure Tcl (baseline) JPEG decoder.
 # Copyright (c) 2017, 2020 dbohdan and contributors listed in AUTHORS
 # License: MIT.
-source ptjd.tcl
+source [file dirname [info script]]/ptjd.tcl
 
 set numTests(Total)    0
 set numTests(Passed)   0

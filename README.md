@@ -34,7 +34,7 @@ The decoder is far too slow to replace C-based JPEG decoders for Tcl for anythin
 
 ### What is the performance like?
 
-The script `benchmark.tcl` can be used to evaluate the performance of the decoder by timing how long it takes to decode several test images included in this repository. Here are the sample results obtained by running the benchmark on an [AMD Phenom II](http://www.cpubenchmark.net/singleThread.html#rk368) CPU.
+The script `benchmark.tcl` can be used to evaluate the performance of the decoder by timing how long it takes to decode several test images included in this repository. Here are the sample results obtained by running the benchmark on an [AMD Phenom II](https://www.cpubenchmark.net/cpu.php?cpu=AMD+Phenom+II+X4+955&id=368) CPU.
 
 ```none
 Running in Tcl 8.5.19 (64-bit) on x86_64 Linux
