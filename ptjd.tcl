@@ -150,7 +150,7 @@ proc ::ptjd::read-tables {until data ptr qts huffdc huffac ri} {
                     if {$pq == 1} {
                         error "16-bit quantization tables aren't supported"
                     }
-                    lset qts $tq $elements                    
+                    lset qts $tq $elements
                 }
             }
             \xFF\xC4 {
@@ -167,7 +167,7 @@ proc ::ptjd::read-tables {until data ptr qts huffdc huffac ri} {
                     foreach li $bits {
                         scan-at-ptr cu$li ln
                         incr ptr $li
-                        lappend huffval $ln 
+                        lappend huffval $ln
                         incr scanned $li
                     }
                     if {$tc == 0} {
@@ -194,7 +194,7 @@ proc ::ptjd::read-tables {until data ptr qts huffdc huffac ri} {
                     incr ptr [expr {$length + 2}]
                 } else {
                     error "unsupported section \"[escape-unprintable $marker]\"\
-                           at 0x[format %x $ptr]"                    
+                           at 0x[format %x $ptr]"
                 }
             }
         }
@@ -247,7 +247,7 @@ proc ::ptjd::get-bits {data ptr bits n} {
     while {[llength $bits] < $n} {
         scan-at-ptr B8 byte
         if {$byte eq "11111111"} {
-            incr ptr 
+            incr ptr
             scan-at-ptr H2 second
             switch -exact -- $second {
                 00 {
@@ -379,7 +379,7 @@ proc ::ptjd::unzigzag block {
     }
     set reordered {}
     foreach i $zigzag {
-        lappend reordered [lindex $block $i] 
+        lappend reordered [lindex $block $i]
     }
     return $reordered
 }
@@ -400,7 +400,7 @@ proc ::ptjd::inverse-dct block {
                 }
             }
             lappend result [expr {round($sum/4.0)}]
-        }   
+        }
     }
     return $result
 }
