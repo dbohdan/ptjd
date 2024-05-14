@@ -33,7 +33,7 @@ The decoder is too slow to replace JPEG decoders for Tcl written in C for anythi
 However, it can be used as a benchmark to compare different Tcl implementations and different versions of the same implementation.
 (See [below](#what-is-the-performance-like).)
 The code may help you understand JPEG compression.
-It is small (aroud 750 lines),
+It is small (around 850 lines),
 written in a [functional](https://en.wikipedia.org/wiki/Functional_programming) style
 (the decoder consists of pure functions [insofar as they exist](https://wiki.tcl-lang.org/page/trace) in Tcl),
 and stores data in easy-to-inspect immutable data structures.
