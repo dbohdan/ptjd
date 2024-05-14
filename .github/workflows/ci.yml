@@ -1,0 +1,29 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download and build dependencies
+        run: |
+          wget -O tclkit-8.5.19 https://kitcreator.rkeene.org/kits/aeb789aed06412bce4cc400c21c0e78f726859e7/tclkit
+          wget -O tclkit-8.6.6 https://kitcreator.rkeene.org/kits/81f2bebfc6fcedcd66b7061eac1db9d278a58e20/tclkit
+
+          echo 'dca564db82e9783069e2f0a83a93d68147b333b0f60d473fe033edbdd323e45d  tclkit-8.5.19' > checksums
+          echo 'e34c777f7d0a2934841adb3e992af46ca7a3dda619bd896348071c5685d8f510  tclkit-8.6.6' >> checksums
+          sha256sum -c checksums
+
+          chmod +x tclkit-8.5.19 tclkit-8.6.6
+
+          git clone https://github.com/msteveb/jimtcl.git
+          cd jimtcl
+          git checkout --detach 0.75
+          ./configure --enable-utf8 --math --disable-docs
+          make
+      - name: Run tests
+        run: |
+          ./tclkit-8.5.19 tests.tcl
+          ./tclkit-8.6.6 tests.tcl
+          ./jimtcl/jimsh tests.tcl
