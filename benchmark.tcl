@@ -1,5 +1,5 @@
-# PTJD, a pure Tcl (baseline) JPEG decoder.
-# Copyright (c) 2017 dbohdan and contributors listed in AUTHORS
+# A pure Tcl (baseline) JPEG decoder.
+# Copyright (c) 2017, 2024 D. Bohdan and contributors listed in AUTHORS.
 # License: MIT.
 source ptjd.tcl
 
