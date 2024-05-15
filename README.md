@@ -84,4 +84,4 @@ landscape-q.jpg   22832 ms
 
 MIT.
 
-The `test-data/landscape*` photo by [Maciej Wrona](https://unsplash.com/@maciek_wrona), licensed under [CC0](https://creativecommons.org/publicdomain/zero/1.0/).
+The `test-data/landscape*` photo by [m wrona](https://unsplash.com/@mwrona), licensed under [CC0](https://creativecommons.org/publicdomain/zero/1.0/).
